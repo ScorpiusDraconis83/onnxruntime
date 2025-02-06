@@ -1,4 +1,5 @@
 ##### start trigger Don't edit it manually, Please do edit set-trigger-rules.py ####
+### please do rerun set-trigger-rules.py ###
 trigger:
   branches:
     include:
@@ -41,7 +42,7 @@ stages:
       parameters:
         BuildConfig: 'Debug'
         buildArch: x64
-        additionalBuildFlags: --build_java --build_nodejs --build_wheel --disable_memleak_checker
+        additionalBuildFlags: --build_java --build_nodejs --build_wheel --disable_memleak_checker --msbuild_extra_options IncludeMobileTargets=false --build_nuget --use_vcpkg
         msbuildPlatform: x64
         isX86: false
         job_name_suffix: x64_debug
@@ -49,8 +50,34 @@ stages:
         isTraining: false
         ORT_EP_NAME: CPU
         GenerateDocumentation: false
-        WITH_CACHE: true
+        WITH_CACHE: false
         MachinePool: 'onnxruntime-Win-CPU-2022'
+
+    - job: build_x64_asan
+      pool: 'onnxruntime-Win-CPU-2022'
+      timeoutInMinutes:  300
+      steps:
+      - checkout: self
+        clean: true
+        submodules: none
+
+      - template: templates/jobs/win-ci-prebuild-steps.yml
+        parameters:
+          EnvSetupScript: setup_env.bat
+          DownloadCUDA: false
+          BuildArch: x64
+          BuildConfig: Debug
+          MachinePool: 'onnxruntime-Win-CPU-2022'
+          WithCache: false
+          Today: $(TODAY)
+
+      - task: PythonScript@0
+        displayName: 'Build and Test'
+        inputs:
+          scriptPath: '$(Build.SourcesDirectory)\tools\ci_build\build.py'
+          arguments: --config Debug --build_dir $(Build.BinariesDirectory) --skip_submodule_sync --parallel --cmake_generator "Visual Studio 17 2022" --disable_memleak_checker --enable_address_sanitizer
+          workingDirectory: '$(Build.BinariesDirectory)'
+
 
 - stage: x64_release
   dependsOn: []
@@ -61,7 +88,7 @@ stages:
         buildArch: x64
         # Compare to our Nuget packaging pipeline, this job has "--build_wheel" but doesn't have "--enable_lto --disable_rtti --use_telemetry  --enable_wcos"
         # Python bindings use typeid so I can't disable RTTI here. If it causes a problem, we will need to split this job to two jobs.
-        additionalBuildFlags: --build_wheel --build_java --build_nodejs
+        additionalBuildFlags: --build_wheel --build_java --build_nodejs --msbuild_extra_options IncludeMobileTargets=false --build_nuget --use_vcpkg
         msbuildPlatform: x64
         isX86: false
         job_name_suffix: x64_release
@@ -69,7 +96,7 @@ stages:
         isTraining: false
         ORT_EP_NAME: CPU
         GenerateDocumentation: false
-        WITH_CACHE: true
+        WITH_CACHE: false
         MachinePool: 'onnxruntime-Win-CPU-2022'
 
 - stage: x64_release_dnnl
@@ -79,7 +106,7 @@ stages:
       parameters:
         BuildConfig: 'RelWithDebInfo'
         buildArch: x64
-        additionalBuildFlags: --build_wheel --use_dnnl --build_java
+        additionalBuildFlags: --build_wheel --use_dnnl --use_vcpkg
         msbuildPlatform: x64
         isX86: false
         job_name_suffix: x64_release
@@ -87,7 +114,7 @@ stages:
         isTraining: false
         ORT_EP_NAME: DNNL
         GenerateDocumentation: false
-        WITH_CACHE: true
+        WITH_CACHE: false
         # Intel EPs require Intel CPUs
         MachinePool: 'onnxruntime-Win2022-Intel-CPU'
 
@@ -99,15 +126,34 @@ stages:
       parameters:
         BuildConfig: 'RelWithDebInfo'
         buildArch: x64
-        additionalBuildFlags: --build_wheel --use_xnnpack
+        additionalBuildFlags: --build_wheel --use_xnnpack --msbuild_extra_options IncludeMobileTargets=false --build_nuget --use_vcpkg
         msbuildPlatform: x64
         isX86: false
         job_name_suffix: x64_release
-        RunOnnxRuntimeTests: true
+        RunOnnxRuntimeTests: ${{ parameters.RunOnnxRuntimeTests }}
         isTraining: false
         ORT_EP_NAME: XNNPACK
         GenerateDocumentation: false
-        WITH_CACHE: true
+        WITH_CACHE: false
+        MachinePool: 'onnxruntime-Win-CPU-2022'
+
+# Build only. Does not run any tests.
+- stage: x64_release_vitisai
+  dependsOn: []
+  jobs:
+    - template: templates/jobs/win-ci-vs-2022-job.yml
+      parameters:
+        BuildConfig: 'RelWithDebInfo'
+        buildArch: x64
+        additionalBuildFlags: --build_wheel --use_vitisai
+        msbuildPlatform: x64
+        isX86: false
+        job_name_suffix: x64_release
+        RunOnnxRuntimeTests: false
+        isTraining: false
+        ORT_EP_NAME: VITISAI
+        GenerateDocumentation: false
+        WITH_CACHE: false
         MachinePool: 'onnxruntime-Win-CPU-2022'
 
 - stage: x64_release_winml
@@ -117,12 +163,31 @@ stages:
       parameters:
         BuildConfig: 'RelWithDebInfo'
         buildArch: x64
-        additionalBuildFlags: --use_winml --enable_wcos --disable_rtti --cmake_extra_defines CMAKE_SYSTEM_VERSION=10.0.22000.0
+        additionalBuildFlags: --use_winml --enable_wcos --disable_rtti --msbuild_extra_options IncludeMobileTargets=false --build_nuget --use_vcpkg
         msbuildPlatform: x64
         isX86: false
         job_name_suffix: x64_release_winml
         RunOnnxRuntimeTests: ${{ parameters.RunOnnxRuntimeTests }}
         # WinML has many warnings
+        EnablePython: false
+        isTraining: false
+        ORT_EP_NAME: CPU
+        GenerateDocumentation: false
+        WITH_CACHE: false
+        MachinePool: 'onnxruntime-Win-CPU-2022'
+
+- stage: x64_release_ep_generic_interface
+  dependsOn: []
+  jobs:
+    - template: templates/jobs/win-ci-vs-2022-job.yml
+      parameters:
+        BuildConfig: 'RelWithDebInfo'
+        buildArch: x64
+        additionalBuildFlags: --enable_generic_interface --use_vcpkg
+        msbuildPlatform: x64
+        isX86: false
+        job_name_suffix: x64_release_ep_generic_interface
+        RunOnnxRuntimeTests: false  # --enable_generic_interface does not build tests
         EnablePython: false
         isTraining: false
         ORT_EP_NAME: CPU
@@ -138,7 +203,7 @@ stages:
         BuildConfig: 'RelWithDebInfo'
         EnvSetupScript: setup_env_x86.bat
         buildArch: x86
-        additionalBuildFlags: --build_wheel
+        additionalBuildFlags: --build_wheel --msbuild_extra_options IncludeMobileTargets=false --build_nuget --use_vcpkg
         msbuildPlatform: Win32
         isX86: true
         job_name_suffix: x86_release
@@ -146,44 +211,8 @@ stages:
         isTraining: false
         ORT_EP_NAME: CPU
         GenerateDocumentation: false
-        WITH_CACHE: true
+        WITH_CACHE: false
         MachinePool: 'onnxruntime-Win-CPU-2022'
-
-- stage: training_x64_debug
-  dependsOn: []
-  jobs:
-    - template: templates/jobs/win-ci-vs-2022-job.yml
-      parameters:
-        BuildConfig: 'Debug'
-        buildArch: x64
-        additionalBuildFlags: --enable_training --build_wheel --disable_memleak_checker
-        msbuildPlatform: x64
-        isX86: false
-        job_name_suffix: training_x64_debug
-        RunOnnxRuntimeTests: ${{ parameters.RunOnnxRuntimeTests }}
-        isTraining: true
-        ORT_EP_NAME: CPU
-        GenerateDocumentation: false
-        WITH_CACHE: true
-        MachinePool: 'onnxruntime-Win2022-CPU-training-AMD'
-
-- stage: training_x64_release
-  dependsOn: []
-  jobs:
-    - template: templates/jobs/win-ci-vs-2022-job.yml
-      parameters:
-        BuildConfig: 'RelWithDebInfo'
-        buildArch: x64
-        additionalBuildFlags: --enable_training --build_wheel
-        msbuildPlatform: x64
-        isX86: false
-        job_name_suffix: training_x64_release
-        RunOnnxRuntimeTests: ${{ parameters.RunOnnxRuntimeTests }}
-        isTraining: true
-        ORT_EP_NAME: CPU
-        GenerateDocumentation: false
-        WITH_CACHE: true
-        MachinePool: 'onnxruntime-Win2022-CPU-training-AMD'
 
 - stage: ort_training_apis_x64_release
   dependsOn: []
@@ -192,7 +221,7 @@ stages:
       parameters:
         BuildConfig: 'RelWithDebInfo'
         buildArch: x64
-        additionalBuildFlags: --enable_training_apis
+        additionalBuildFlags: --enable_training_apis --msbuild_extra_options IncludeMobileTargets=false --build_nuget --use_vcpkg
         msbuildPlatform: x64
         isX86: false
         job_name_suffix: ort_training_apis_x64_release
@@ -201,13 +230,13 @@ stages:
         isTraining: true
         ORT_EP_NAME: CPU
         GenerateDocumentation: false
-        WITH_CACHE: true
+        WITH_CACHE: false
         MachinePool: 'onnxruntime-Win2022-CPU-training-AMD'
 
 - stage: x64_release_azure
   dependsOn: []
   jobs:
-    - job:
+    - job: x64_release_azure
       steps:
       - powershell: |
           Write-Host "##vso[task.prependpath]$(Build.BinariesDirectory)\RelWithDebInfo\_deps\vcpkg-src\installed\x86-windows\bin"
@@ -219,7 +248,7 @@ stages:
       parameters:
         BuildConfig: 'RelWithDebInfo'
         buildArch: x64
-        additionalBuildFlags: --use_azure --use_lock_free_queue
+        additionalBuildFlags: --use_azure --use_lock_free_queue --msbuild_extra_options IncludeMobileTargets=false --build_nuget --use_vcpkg
         msbuildPlatform: x64
         isX86: false
         job_name_suffix: x64_release_azure
@@ -228,7 +257,5 @@ stages:
         isTraining: false
         ORT_EP_NAME: CPU
         GenerateDocumentation: false
-        WITH_CACHE: true
+        WITH_CACHE: false
         MachinePool: 'onnxruntime-Win-CPU-2022'
-
-

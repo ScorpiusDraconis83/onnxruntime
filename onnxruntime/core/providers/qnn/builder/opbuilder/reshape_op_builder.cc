@@ -1,13 +1,10 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
 
-#include "core/providers/common.h"
-#include "core/providers/shared/utils/utils.h"
-#include "core/framework/tensorprotoutils.h"
+#include "core/providers/qnn/builder/opbuilder/base_op_builder.h"
+#include "core/providers/qnn/builder/qnn_utils.h"
 #include "core/providers/qnn/builder/qnn_model_wrapper.h"
 #include "core/providers/qnn/builder/op_builder_factory.h"
-
-#include "base_op_builder.h"
 
 namespace onnxruntime {
 namespace qnn {
@@ -29,7 +26,7 @@ class ReshapeOpBuilder : public BaseOpBuilder {
                                   const std::vector<std::string>& input_names,
                                   size_t output_index,
                                   Qnn_DataType_t qnn_data_type,
-                                  Qnn_QuantizeParams_t& quant_param) const override ORT_MUST_USE_RESULT;
+                                  QnnQuantParamsWrapper& quant_param) const override ORT_MUST_USE_RESULT;
 };
 
 Status ReshapeOpBuilder::ProcessInputs(QnnModelWrapper& qnn_model_wrapper,
@@ -57,7 +54,11 @@ Status ReshapeOpBuilder::OverrideOutputQuantParam(QnnModelWrapper& qnn_model_wra
                                                   const std::vector<std::string>& input_names,
                                                   size_t output_index,
                                                   Qnn_DataType_t qnn_data_type,
-                                                  Qnn_QuantizeParams_t& quant_param) const {
+                                                  QnnQuantParamsWrapper& quant_param) const {
+  if (!quant_param.IsPerTensor()) {
+    return Status::OK();
+  }
+
   // Force Reshape output to use the same quantization parameters as the input if nearly equal.
   // This helps the HTP backend emply certain optimizations.
   return SetOutputQParamEqualToInputIfNearlyEqual(qnn_model_wrapper, node_unit, logger, input_names,

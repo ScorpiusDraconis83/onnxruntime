@@ -3,7 +3,6 @@
 # Licensed under the MIT License.
 # --------------------------------------------------------------------------
 import logging
-from typing import Union
 
 from fusion_attention import AttentionMask, FusionAttention
 from fusion_utils import NumpyHelper
@@ -17,7 +16,7 @@ logger = logging.getLogger(__name__)
 class FusionTnlrAttention(FusionAttention):
     """
     Fuse TNLR Attention subgraph into one Attention node.
-    TNLR Attention has extra addtion after qk nodes and adopts [S, B, NH] as I/O shape.
+    TNLR Attention has extra addition after qk nodes and adopts [S, B, NH] as I/O shape.
     """
 
     def __init__(
@@ -39,7 +38,7 @@ class FusionTnlrAttention(FusionAttention):
         input: str,
         output: str,
         add_qk_str: str,
-    ) -> Union[NodeProto, None]:
+    ) -> NodeProto | None:
         assert num_heads > 0
         if hidden_size > 0 and (hidden_size % num_heads) != 0:
             logger.debug(f"input hidden size {hidden_size} is not a multiple of num of heads {num_heads}")

@@ -1,7 +1,7 @@
 # Refer to https://github.com/RadeonOpenCompute/ROCm-docker/blob/master/dev/Dockerfile-ubuntu-22.04-complete
 FROM ubuntu:22.04
 
-ARG ROCM_VERSION=6.0
+ARG ROCM_VERSION=6.2.3
 ARG AMDGPU_VERSION=${ROCM_VERSION}
 ARG APT_PREF='Package: *\nPin: release o=repo.radeon.com\nPin-Priority: 600'
 
@@ -12,7 +12,7 @@ RUN echo "$APT_PREF" > /etc/apt/preferences.d/rocm-pin-600
 ENV DEBIAN_FRONTEND noninteractive
 
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends ca-certificates curl libnuma-dev gnupg && \
+    apt-get install -y --no-install-recommends ca-certificates ninja-build git zip curl libnuma-dev gnupg && \
     curl -sL https://repo.radeon.com/rocm/rocm.gpg.key | apt-key add -   &&\
     printf "deb [arch=amd64] https://repo.radeon.com/rocm/apt/$ROCM_VERSION/ jammy main" | tee /etc/apt/sources.list.d/rocm.list   && \
     printf "deb [arch=amd64] https://repo.radeon.com/amdgpu/$AMDGPU_VERSION/ubuntu jammy main" | tee /etc/apt/sources.list.d/amdgpu.list   && \
@@ -45,10 +45,10 @@ ENV LANG C.UTF-8
 WORKDIR /stage
 
 # Cmake
-ENV CMAKE_VERSION=3.27.3
+ENV CMAKE_VERSION=3.31.5
 RUN cd /usr/local && \
     wget -q https://github.com/Kitware/CMake/releases/download/v${CMAKE_VERSION}/cmake-${CMAKE_VERSION}-Linux-x86_64.tar.gz && \
-    tar -zxf /usr/local/cmake-3.27.3-Linux-x86_64.tar.gz --strip=1 -C /usr
+    tar -zxf /usr/local/cmake-3.31.5-Linux-x86_64.tar.gz --strip=1 -C /usr
 
 # ccache
 RUN mkdir -p /tmp/ccache && \
@@ -68,7 +68,7 @@ RUN wget --quiet https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86
 # Create migraphx-ci environment
 ENV CONDA_ENVIRONMENT_PATH /opt/miniconda/envs/migraphx-ci
 ENV CONDA_DEFAULT_ENV migraphx-ci
-RUN conda create -y -n ${CONDA_DEFAULT_ENV} python=3.9
+RUN conda create -y -n ${CONDA_DEFAULT_ENV} python=3.10
 ENV PATH ${CONDA_ENVIRONMENT_PATH}/bin:${PATH}
 
 # Enable migraphx-ci environment
@@ -80,4 +80,4 @@ RUN ln -sf /usr/lib/x86_64-linux-gnu/libstdc++.so.6 ${CONDA_ENVIRONMENT_PATH}/bi
 # Install migraphx
 RUN apt update && apt install -y migraphx
 
-RUN pip install numpy packaging ml_dtypes==0.3.0
+RUN pip install numpy packaging ml_dtypes==0.5.0

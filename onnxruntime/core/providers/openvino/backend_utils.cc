@@ -1,28 +1,23 @@
-// Copyright (C) 2019-2022 Intel Corporation
+// Copyright (C) Intel Corporation
 // Licensed under the MIT License
 
 #include <algorithm>
 #include <sstream>
 #include <fstream>
+#include <utility>
 
-#include "ov_interface.h"
 #include "openvino/pass/convert_fp32_to_fp16.hpp"
 #include "openvino/pass/constant_folding.hpp"
 #include "core/providers/shared_library/provider_api.h"
-#include "backend_utils.h"
+#include "core/providers/openvino/backend_utils.h"
+#include "core/providers/openvino/ov_interface.h"
 
-#if defined(OV_API_20)
 using Exception = ov::Exception;
-#else
-using Exception = InferenceEngine::details::InferenceEngineException;
-using WaitMode = InferenceEngine::IInferRequest::WaitMode;
-#endif
 
 namespace onnxruntime {
 namespace openvino_ep {
 namespace backend_utils {
 
-#ifndef NDEBUG
 bool IsDebugEnabled() {
   const std::string env_name = onnxruntime::GetEnvironmentVar("ORT_OPENVINO_ENABLE_DEBUG");
   if (!env_name.empty()) {
@@ -30,7 +25,6 @@ bool IsDebugEnabled() {
   }
   return false;
 }
-#endif
 
 bool IsCILogEnabled() {
   const std::string env_name = onnxruntime::GetEnvironmentVar("ORT_OPENVINO_ENABLE_CI_LOG");
@@ -45,44 +39,21 @@ struct static_cast_int64 {
   int64_t operator()(const T1& x) const { return static_cast<int64_t>(x); }
 };
 
-std::shared_ptr<OVNetwork>
+std::shared_ptr<const OVNetwork>
 CreateOVModel(const ONNX_NAMESPACE::ModelProto& model_proto, const GlobalContext& global_context,
-              const SubGraphContext& subgraph_context,
               std::map<std::string, std::shared_ptr<ov::Node>>& const_outputs_map) {
   if (IsCILogEnabled()) {
     std::cout << "CreateNgraphFunc" << std::endl;
   }
   const std::string model = model_proto.SerializeAsString();
   try {
-    auto cnn_network = global_context.ie_core.ReadModel(model, global_context.onnx_model_path_name);
-    if ((subgraph_context.precision == "FP16") &&
-        (global_context.device_type.find("NPU") == std::string::npos)) {
-      // FP16 transformations
-      ov::pass::ConvertFP32ToFP16 pass_obj;
-      pass_obj.run_on_model(cnn_network);
-      cnn_network->validate_nodes_and_infer_types();
-
-      auto proc = ov::preprocess::PrePostProcessor(cnn_network);
-      for (size_t i = 0; i < cnn_network->inputs().size(); i++) {
-        if (cnn_network->inputs()[i].get_element_type() == ov::element::f16) {
-          proc.input(i).tensor().set_element_type(ov::element::f32);
-          proc.input(i).preprocess().convert_element_type(ov::element::f16);
-        }
-      }
-
-      for (size_t i = 0; i < cnn_network->outputs().size(); i++) {
-        if (cnn_network->outputs()[i].get_element_type() == ov::element::f16) {
-          proc.output(i).postprocess().convert_element_type(ov::element::f32);
-        }
-      }
-      cnn_network = proc.build();
-    }
+    auto ov_model = global_context.ie_core.ReadModel(model, global_context.onnx_model_path_name);
 
     // Check for Constant Folding
-    if (!global_context.is_wholly_supported_graph) {
+    if ((global_context.device_type != "NPU") && !global_context.is_wholly_supported_graph) {
       ov::pass::ConstantFolding pass_const_obj;
-      pass_const_obj.run_on_model(cnn_network);
-      auto& results = const_cast<ov::ResultVector&>(cnn_network.get()->get_results());
+      pass_const_obj.run_on_model(ov_model);
+      auto& results = const_cast<ov::ResultVector&>(ov_model.get()->get_results());
       size_t index = results.size() - 1;
 
       for (auto it = results.rbegin(); it != results.rend(); ++it) {
@@ -95,17 +66,15 @@ CreateOVModel(const ONNX_NAMESPACE::ModelProto& model_proto, const GlobalContext
       }
     }
 #ifndef NDEBUG
-#if defined(OPENVINO_2022_3) || (OPENVINO_2023_0) || (OPENVINO_2023_1) || (OPENVINO_2023_2)
     if (IsDebugEnabled()) {
-      std::string name = cnn_network->get_friendly_name();
+      std::string name = ov_model->get_friendly_name();
       ov::pass::Serialize serializer(name + ".xml", name + ".bin");
-      serializer.run_on_model(cnn_network);
+      serializer.run_on_model(ov_model);
     }
 #endif
-#endif
-    return cnn_network;
+    return ov_model;
   } catch (std::string const& msg) {
-    throw msg;
+    ORT_THROW(msg);
   }
 }
 
@@ -129,7 +98,7 @@ GetOutputTensor(Ort::KernelContext& context, size_t batch_size,
   }
   auto it = output_names.find(output_name);
   if (it == output_names.end()) {
-    throw std::string(log_tag + "Output names mismatch between OpenVINO and ONNX");
+    ORT_THROW(log_tag + "Output names mismatch between OpenVINO and ONNX");
   }
   int index = it->second;
   return context.GetOutput(index, output_shape.get(), num_dims);
@@ -141,13 +110,13 @@ GetOutputTensor(Ort::KernelContext& context,
                 std::unordered_map<std::string, int> output_names,
                 std::shared_ptr<ov::Node> node) {
   // Find position of '/' in the output_name
-  int pos = output_name.find("/");
+  auto pos = output_name.find("/");
   // Copy the substring from start to pos
   output_name = output_name.substr(0, pos);
 
   auto it = output_names.find(output_name);
   if (it == output_names.end()) {
-    throw std::string(log_tag + "Output names mismatch between OpenVINO and ONNX");
+    ORT_THROW(log_tag + "Output names mismatch between OpenVINO and ONNX");
   }
   int index = it->second;
   auto shape = node->get_shape();
@@ -206,7 +175,7 @@ void FillOutputsWithConstantData(std::shared_ptr<ov::Node> node, Ort::UnownedVal
       break;
     }
     default:
-      throw std::string(log_tag + "Unsupported output data type");
+      ORT_THROW(log_tag + "Unsupported output data type");
   }
 }
 
@@ -234,7 +203,7 @@ void FillInputBlob(OVTensorPtr inputBlob, size_t batch_slice_idx,
   auto tensor = context.GetInput(subgraph_context.input_names.at(input_name));
   auto mem_info = tensor.GetTensorMemoryInfo();
   if (mem_info.GetAllocatorName() == OpenVINO_GPU) {
-    throw std::string(log_tag + "IO Buffering is not enabled, Please enable Input on CPU");
+    ORT_THROW(log_tag + "IO Buffering is not enabled, Please enable Input on CPU");
   }
   // Copy input data into OpenVINO's input buffer
   const char* tensor_data = tensor.GetTensorData<char>();
@@ -295,7 +264,7 @@ void printPerformanceCounts(const std::vector<OVProfilingInfo>& performanceMap,
 
 void printPerformanceCounts(OVInferRequestPtr request, std::ostream& stream, std::string deviceName) {
   auto performanceMap = request->GetNewObj().get_profiling_info();
-  printPerformanceCounts(performanceMap, stream, deviceName);
+  printPerformanceCounts(performanceMap, stream, std::move(deviceName));
 }
 
 }  // namespace backend_utils

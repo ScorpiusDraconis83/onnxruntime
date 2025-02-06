@@ -56,11 +56,7 @@ def parse_args():
 def main():
     args = parse_args()
 
-    log.debug(
-        "Dockerfile: {}, context: {}, docker build args: '{}'".format(
-            args.dockerfile, args.context, args.docker_build_args
-        )
-    )
+    log.debug(f"Dockerfile: {args.dockerfile}, context: {args.context}, docker build args: '{args.docker_build_args}'")
 
     use_container_registry = args.container_registry is not None
 
@@ -108,11 +104,10 @@ def main():
             "error",
             "buildx",
             "build",
-            "--push",
+            "--load",
             "--tag",
             full_image_name,
-            "--cache-from",
-            full_image_name,
+            "--cache-from=type=registry,ref=" + full_image_name,
             "--build-arg",
             "BUILDKIT_INLINE_CACHE=1",
             *shlex.split(args.docker_build_args),
@@ -120,24 +115,10 @@ def main():
             args.dockerfile,
             args.context,
         )
-    elif args.use_imagecache:
-        log.info("Building image with pipeline cache...")
         run(
             args.docker_path,
-            "--log-level",
-            "error",
-            "buildx",
-            "build",
-            "--tag",
+            "push",
             full_image_name,
-            "--cache-from",
-            full_image_name,
-            "--build-arg",
-            "BUILDKIT_INLINE_CACHE=1",
-            *shlex.split(args.docker_build_args),
-            "-f",
-            args.dockerfile,
-            args.context,
         )
     else:
         log.info("Building image...")

@@ -16,7 +16,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from enum import Enum
 from time import sleep
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import coloredlogs
 import numpy
@@ -85,6 +85,7 @@ def create_onnxruntime_session(
     num_threads=-1,
     enable_profiling=False,
     verbose=False,
+    enable_mlas_gemm_fastmath_arm64_bfloat16=False,
     provider_options={},  # map execution provider name to its option  # noqa: B006
 ):
     session = None
@@ -136,9 +137,12 @@ def create_onnxruntime_session(
         if provider_options:
             providers = [(name, provider_options[name]) if name in provider_options else name for name in providers]
 
+        if enable_mlas_gemm_fastmath_arm64_bfloat16:
+            sess_options.add_session_config_entry("mlas.enable_gemm_fastmath_arm64_bfloat16", "1")
+
         session = onnxruntime.InferenceSession(onnx_model_path, sess_options, providers=providers)
     except Exception:
-        logger.error("Exception", exc_info=True)
+        logger.error("Exception", exc_info=True)  # noqa: G201
 
     return session
 
@@ -163,9 +167,9 @@ def prepare_environment(cache_dir, output_dir, use_gpu, provider=None):
 
     if use_gpu:
         if provider == "dml":
-            assert (
-                "DmlExecutionProvider" in onnxruntime.get_available_providers()
-            ), "Please install onnxruntime-directml package to test GPU inference."
+            assert "DmlExecutionProvider" in onnxruntime.get_available_providers(), (
+                "Please install onnxruntime-directml package to test GPU inference."
+            )
 
         else:
             assert not set(onnxruntime.get_available_providers()).isdisjoint(
@@ -341,11 +345,7 @@ def inference_ort_with_io_binding(
     # Bind inputs to device
     for name in ort_inputs:
         np_input = torch.from_numpy(ort_inputs[name]).to(device)
-        input_type = (
-            IO_BINDING_DATA_TYPE_MAP[str(ort_inputs[name].dtype)]
-            if str(ort_inputs[name].dtype) in IO_BINDING_DATA_TYPE_MAP
-            else data_type
-        )
+        input_type = IO_BINDING_DATA_TYPE_MAP.get(str(ort_inputs[name].dtype), data_type)
         io_binding.bind_input(
             name,
             np_input.device.type,
@@ -405,7 +405,7 @@ def set_random_seed(seed=123):
     # torch.backends.cudnn.deterministic = True
 
 
-def get_gpu_info() -> Optional[List[Dict[str, Any]]]:
+def get_gpu_info() -> list[dict[str, Any]] | None:
     from py3nvml.py3nvml import (
         NVMLError,
         nvmlDeviceGetCount,
@@ -459,7 +459,7 @@ class MemoryMonitor(ABC):
         return max_usage
 
     @abstractmethod
-    def measure_gpu_usage(self) -> Optional[List[Dict[str, Any]]]:
+    def measure_gpu_usage(self) -> list[dict[str, Any]] | None:
         raise NotImplementedError()
 
 
@@ -467,7 +467,7 @@ class CudaMemoryMonitor(MemoryMonitor):
     def __init__(self, keep_measuring=True):
         super().__init__(keep_measuring)
 
-    def measure_gpu_usage(self) -> Optional[List[Dict[str, Any]]]:
+    def measure_gpu_usage(self) -> list[dict[str, Any]] | None:
         from py3nvml.py3nvml import (
             NVMLError,
             nvmlDeviceGetCount,
@@ -589,7 +589,7 @@ def measure_memory(is_gpu, func, monitor_type="cuda", start_memory=None):
             if max_usage is None:
                 return None
 
-            print(f"GPU memory usage: before={memory_before_test}  peak={max_usage}")
+            logger.info(f"GPU memory usage: before={memory_before_test}  peak={max_usage}")
             if len(memory_before_test) >= 1 and len(max_usage) >= 1 and len(memory_before_test) == len(max_usage):
                 # When there are multiple GPUs, we will check the one with maximum usage.
                 max_used = 0
@@ -620,7 +620,7 @@ def measure_memory(is_gpu, func, monitor_type="cuda", start_memory=None):
             monitor.keep_measuring = False
             max_usage = mem_thread.result()
 
-        print(f"CPU memory usage: before={memory_before_test:.1f} MB, peak={max_usage:.1f} MB")
+        logger.info(f"CPU memory usage: before={memory_before_test:.1f} MB, peak={max_usage:.1f} MB")
         return max_usage - memory_before_test
 
 

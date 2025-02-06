@@ -65,6 +65,22 @@ std::vector<float> GetSequentialFloatData(const std::vector<int64_t>& shape, flo
   return data;
 }
 
+TestInputDef<MLFloat16> ConvertToFP16InputDef(const TestInputDef<float>& input_def) {
+  if (input_def.IsRawData()) {
+    std::vector<MLFloat16> input_data_fp16;
+    input_data_fp16.reserve(input_def.GetRawData().size());
+    for (float f32_val : input_def.GetRawData()) {
+      input_data_fp16.push_back(MLFloat16(f32_val));
+    }
+
+    return TestInputDef<MLFloat16>(input_def.GetShape(), input_def.IsInitializer(), input_data_fp16);
+  } else {
+    auto rand_data = input_def.GetRandomDataInfo();
+    return TestInputDef<MLFloat16>(input_def.GetShape(), input_def.IsInitializer(),
+                                   MLFloat16(rand_data.min), MLFloat16(rand_data.max));
+  }
+}
+
 void TryEnableQNNSaver(ProviderOptions& qnn_options) {
   // Allow dumping QNN API calls to file by setting an environment variable that enables the QNN Saver backend.
   constexpr auto kEnableQNNSaverEnvironmentVariableName = "ORT_UNIT_TEST_ENABLE_QNN_SAVER";
@@ -82,10 +98,12 @@ void TryEnableQNNSaver(ProviderOptions& qnn_options) {
 
 void RunQnnModelTest(const GetTestModelFn& build_test_case, ProviderOptions provider_options,
                      int opset_version, ExpectedEPNodeAssignment expected_ep_assignment,
-                     float fp32_abs_err, logging::Severity log_severity, bool verify_outputs) {
+                     float fp32_abs_err, logging::Severity log_severity, bool verify_outputs,
+                     std::function<void(const Graph&)>* ep_graph_checker) {
   EPVerificationParams verification_params;
   verification_params.ep_node_assignment = expected_ep_assignment;
   verification_params.fp32_abs_err = fp32_abs_err;
+  verification_params.graph_verifier = ep_graph_checker;
   // Add kMSDomain to cover contrib op like Gelu
   const std::unordered_map<std::string, int> domain_to_version = {{"", opset_version}, {kMSDomain, 1}};
 
@@ -116,7 +134,8 @@ void InferenceModel(const std::string& model_data, const char* log_id,
                     ExpectedEPNodeAssignment expected_ep_assignment, const NameMLValMap& feeds,
                     std::vector<OrtValue>& output_vals,
                     bool is_qnn_ep,
-                    const std::unordered_map<std::string, std::string>& session_option_pairs) {
+                    const std::unordered_map<std::string, std::string>& session_option_pairs,
+                    std::function<void(const Graph&)>* graph_checker) {
   SessionOptions so;
   so.session_logid = log_id;
   for (auto key_value : session_option_pairs) {
@@ -146,6 +165,10 @@ void InferenceModel(const std::string& model_data, const char* log_id,
     ASSERT_EQ(ep_nodes, 0) << "No nodes are supposed to be assigned to " << provider_type;
   } else {
     ASSERT_GT(ep_nodes, 0) << "No nodes were assigned to " << provider_type;
+  }
+
+  if (graph_checker) {
+    (*graph_checker)(graph);
   }
 
   const auto& outputs = graph.GetOutputs();
@@ -255,7 +278,7 @@ static BackendSupport GetHTPSupport(const onnxruntime::logging::Logger& logger) 
   MockKernelLookup kernel_lookup;
   onnxruntime::GraphViewer graph_viewer(graph);
   std::unique_ptr<onnxruntime::IExecutionProvider> qnn_ep = QnnExecutionProviderWithOptions(
-      {{"backend_path", "QnnHtp.dll"}});
+      {{"backend_path", "QnnHtp.dll"}, {"offload_graph_io_quantization", "0"}});
 
   qnn_ep->SetLogger(&logger);
   auto result = qnn_ep->GetCapability(graph_viewer, kernel_lookup);
@@ -318,7 +341,7 @@ static BackendSupport GetCPUSupport(const onnxruntime::logging::Logger& logger) 
   MockKernelLookup kernel_lookup;
   onnxruntime::GraphViewer graph_viewer(graph);
   std::unique_ptr<onnxruntime::IExecutionProvider> qnn_ep = QnnExecutionProviderWithOptions(
-      {{"backend_path", "QnnCpu.dll"}});
+      {{"backend_path", "QnnCpu.dll"}, {"offload_graph_io_quantization", "0"}});
 
   qnn_ep->SetLogger(&logger);
   auto result = qnn_ep->GetCapability(graph_viewer, kernel_lookup);
@@ -365,6 +388,7 @@ bool ReduceOpHasAxesInput(const std::string& op_type, int opset_version) {
       {"ReduceMean", 18},
       {"ReduceProd", 18},
       {"ReduceSum", 13},
+      {"ReduceL2", 18},
   };
 
   const auto it = opset_with_axes_as_input.find(op_type);

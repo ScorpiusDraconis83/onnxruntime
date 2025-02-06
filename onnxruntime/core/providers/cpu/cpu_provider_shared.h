@@ -24,6 +24,9 @@ class SliceOp__PrepareForComputeMetadata;  // Directly maps to SliceOp::PrepareF
 class UnsqueezeBase__Prepare;              // Directly maps to UnsqueezeBase::Prepare
 class contrib__AdamWOptimizerBase__Prepare;
 class contrib__SGDOptimizerV2Base__Prepare;
+class UpsampleBase;
+
+using PadsVector = InlinedVector<int64_t, kTensorShapeSmallBufferElementsSize * 2>;
 
 struct ProviderHostCPU {
   // From cpu/tensor/gatherbase.h
@@ -44,7 +47,11 @@ struct ProviderHostCPU {
                                                const TensorShape& indice_shape,
                                                const TensorShape& update_shape) = 0;
   // From cpu/tensor/padbase.h
-  virtual Status PadBase__HandleDimValueZero(const Mode& mode, const TensorShape& input_shape, TensorShape& output_shape) = 0;
+  virtual Status PadBase__HandleDimValueZero(const Mode& mode, const TensorShape& input_shape, const TensorShape& output_shape) = 0;
+
+  virtual void PadBase__ComputePads(OpKernelContext& ctx, size_t data_rank, gsl::span<const int64_t> pads_data,
+                                    PadsVector& pads) = 0;
+
   // From cpu/tensor/split.h
   virtual Status SplitBase__PrepareForCompute(const SplitBase* p, const TensorShape& input_shape, int num_outputs, int64_t& axis, int& before_dims,
                                               int& after_dims_including_split_axis, int& after_dims_excluding_split,
@@ -134,7 +141,9 @@ struct ProviderHostCPU {
   virtual Status Scan__Compute(const Scan<9>* p, OpKernelContext* ctx) = 0;
   virtual Status Scan__SetupSubgraphExecutionInfo(Scan<8>* p, const SessionState& session_state, const std::string& attribute_name, const SessionState& subgraph_session_state) = 0;
   virtual Status Scan__SetupSubgraphExecutionInfo(Scan<9>* p, const SessionState& session_state, const std::string& attribute_name, const SessionState& subgraph_session_state) = 0;
-
+  virtual void UpsampleBase__AdjustOutputSizeAsPolicy(const UpsampleBase* p, TensorShapeVector& output_dims,
+                                                      gsl::span<const int64_t> input_dims,
+                                                      InlinedVector<float>& scales) const = 0;
 #ifndef DISABLE_CONTRIB_OPS
   virtual Status embed_layer_norm__CheckInputs(const OpKernelContext* context, bool quantizedVersion) = 0;
   virtual Status bias_gelu_helper__CheckInputs(const OpKernelContext* context) = 0;
@@ -154,7 +163,7 @@ struct ProviderHostCPU {
                                             const TensorShape& bias_shape,
                                             const Tensor*& mask_index,
                                             const Tensor* past,
-                                            const Tensor* relative_position_bias,
+                                            const Tensor* attention_bias,
                                             void* parameters,
                                             const int max_threads_per_block,
                                             const Tensor* past_seq_len) = 0;

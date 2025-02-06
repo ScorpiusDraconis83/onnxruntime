@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
 
-#include <onnx/onnx_pb.h>
+#include "core/graph/onnx_protobuf.h"
 
 #include "core/common/logging/logging.h"
 #include "core/common/safeint.h"
@@ -35,7 +35,7 @@ class ReductionOpBuilder : public BaseOpBuilder {
  private:
   int32_t GetMinSupportedNNAPIFeatureLevel(const NodeUnit& node_unit,
                                            const OpSupportCheckParams& params) const override;
-  bool IsOpSupportedImpl(const InitializedTensorSet& initializers, const NodeUnit& node_unit,
+  bool IsOpSupportedImpl(const GraphViewer& graph_viewer, const NodeUnit& node_unit,
                          const OpSupportCheckParams& params) const override;
 };
 
@@ -169,7 +169,7 @@ int32_t ReductionOpBuilder::GetMinSupportedNNAPIFeatureLevel(
   return ANEURALNETWORKS_FEATURE_LEVEL_3;
 }
 
-bool ReductionOpBuilder::IsOpSupportedImpl(const InitializedTensorSet& initializers, const NodeUnit& node_unit,
+bool ReductionOpBuilder::IsOpSupportedImpl(const GraphViewer& graph_viewer, const NodeUnit& node_unit,
                                            const OpSupportCheckParams& /* params */) const {
   const auto& inputs = node_unit.Inputs();
   const auto& op(node_unit.OpType());
@@ -190,7 +190,7 @@ bool ReductionOpBuilder::IsOpSupportedImpl(const InitializedTensorSet& initializ
     const bool noop_with_empty_axes = helper.Get("noop_with_empty_axes", 0) != 0;
     if (inputs.size() > 1 && inputs[1].node_arg.Exists()) {
       const auto& axes_name = inputs[1].node_arg.Name();
-      if (!Contains(initializers, axes_name)) {
+      if (!graph_viewer.GetConstantInitializer(axes_name)) {
         LOGS_DEFAULT(VERBOSE) << "Axes of ReduceMean must be a constant initializer.";
         return false;
       }

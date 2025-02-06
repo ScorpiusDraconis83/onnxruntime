@@ -2,14 +2,8 @@
 // Licensed under the MIT License.
 
 #include "core/providers/qnn/builder/opbuilder/base_op_builder.h"
+#include <utility>
 #include "core/providers/qnn/builder/qnn_utils.h"
-
-#include <core/providers/common.h>
-
-#include "core/providers/shared/utils/utils.h"
-#include "core/framework/tensorprotoutils.h"
-#include "core/providers/cpu/tensor/transpose.h"
-#include "core/common/safeint.h"
 
 namespace onnxruntime {
 namespace qnn {
@@ -56,17 +50,8 @@ Status BaseOpBuilder::ProcessInput(QnnModelWrapper& qnn_model_wrapper,
     return Status::OK();
   }
 
-  TensorInfo input_info = {};
-  ORT_RETURN_IF_ERROR(qnn_model_wrapper.GetTensorInfo(input, input_info));
-
-  std::vector<uint8_t> unpacked_tensor;
-  if (input_info.is_initializer) {
-    ORT_RETURN_IF_ERROR(qnn_model_wrapper.UnpackInitializerData(*input_info.initializer_tensor, unpacked_tensor));
-  }
-
-  Qnn_TensorType_t tensor_type = GetInputTensorType(qnn_model_wrapper, input_name);
-  QnnTensorWrapper input_tensorwrapper(input_name, tensor_type, input_info.qnn_data_type, input_info.quant_param,
-                                       std::move(input_info.shape), std::move(unpacked_tensor));
+  QnnTensorWrapper input_tensorwrapper;
+  ORT_RETURN_IF_ERROR(qnn_model_wrapper.MakeTensorWrapper(input, input_tensorwrapper));
   ORT_RETURN_IF_NOT(qnn_model_wrapper.AddTensorWrapper(std::move(input_tensorwrapper)), "Failed to add tensor.");
   input_names.push_back(input_name);
 
@@ -85,6 +70,64 @@ Status BaseOpBuilder::ProcessInputs(QnnModelWrapper& qnn_model_wrapper,
   for (size_t input_i = 0; input_i < input_count; ++input_i) {
     ORT_RETURN_IF_ERROR(ProcessInput(qnn_model_wrapper, inputs[input_i], logger, input_names));
   }
+
+  return Status::OK();
+}
+
+Status BaseOpBuilder::AddZeroBiasInput(QnnModelWrapper& qnn_model_wrapper,
+                                       const QnnQuantParamsWrapper& input0_qparams,
+                                       const QnnQuantParamsWrapper& input1_qparams,
+                                       std::vector<uint32_t>&& bias_shape,
+                                       const std::string& bias_name,
+                                       const logging::Logger& logger,
+                                       std::vector<std::string>& input_names) const {
+  ORT_UNUSED_PARAMETER(logger);
+  // For now, only handle case where input0 is per-tensor quantized and input1 is either per-tensor
+  // or per-channel quantized.
+  ORT_RETURN_IF_NOT(input0_qparams.IsPerTensor(/*include_bw*/ true) && input1_qparams.IsQuantized(),
+                    "QNN EP currently only supports adding a dummy zero bias input for per-tensor ",
+                    "input[0] and per-tensor/per-channel input[1]");
+
+  size_t num_bias_elems = 1;
+  for (size_t i = 0; i < bias_shape.size(); i++) {
+    num_bias_elems *= static_cast<size_t>(bias_shape[i]);
+  }
+
+  // Bias static input should be all zeros.
+  std::vector<uint8_t> bias_bytes(num_bias_elems * sizeof(int32_t), 0);
+
+  // Bias's quantization scale(s) should be the product of the other inputs' quantization scales.
+  // Input[0] is expected to have one scale (per-tensor).
+  // If input[1] is per-channel (many scales), then the dummy bias also needs to be per-channel.
+  std::vector<float> input0_quant_scales;
+  std::vector<float> input1_quant_scales;
+  ORT_RETURN_IF_ERROR(input0_qparams.GetScales(input0_quant_scales));
+  ORT_RETURN_IF_ERROR(input1_qparams.GetScales(input1_quant_scales));
+
+  const size_t num_bias_scales_offsets = input1_quant_scales.size();
+  assert(input0_quant_scales.size() == 1);  // Expected for per-tensor.
+  ORT_RETURN_IF_NOT(num_bias_scales_offsets >= input0_quant_scales.size(),
+                    "Input[1] should have >= 1 quantization scale values");
+
+  std::vector<float> bias_scales(num_bias_scales_offsets);
+  for (size_t i = 0; i < num_bias_scales_offsets; i++) {
+    bias_scales[i] = input0_quant_scales[0] * input1_quant_scales[i];
+  }
+
+  std::vector<int32_t> bias_offsets(num_bias_scales_offsets, 0);  // Bias's zero-points should be all zeros.
+  QnnQuantParamsWrapper bias_qparams;
+
+  if (input1_qparams.IsPerChannel()) {
+    bias_qparams = QnnQuantParamsWrapper(bias_scales, bias_offsets, /*axis*/ 0, /*is_int4*/ false);
+  } else {
+    bias_qparams = QnnQuantParamsWrapper(bias_scales[0], bias_offsets[0]);
+  }
+
+  auto tensor_wrapper = QnnTensorWrapper(bias_name, QNN_TENSOR_TYPE_STATIC, QNN_DATATYPE_SFIXED_POINT_32,
+                                         std::move(bias_qparams), std::move(bias_shape), std::move(bias_bytes));
+
+  qnn_model_wrapper.AddTensorWrapper(std::move(tensor_wrapper));
+  input_names.push_back(bias_name);
 
   return Status::OK();
 }
@@ -129,7 +172,7 @@ Status BaseOpBuilder::ProcessOutputs(QnnModelWrapper& qnn_model_wrapper,
     TensorInfo output_info = {};
     ORT_RETURN_IF_ERROR(qnn_model_wrapper.GetTensorInfo(outputs[output_i], output_info));
 
-    if (output_info.quant_param.encodingDefinition == QNN_DEFINITION_DEFINED) {
+    if (output_info.quant_param.IsQuantized()) {
       ORT_RETURN_IF_ERROR(OverrideOutputQuantParam(qnn_model_wrapper, node_unit, logger, input_names,
                                                    output_i, output_info.qnn_data_type, output_info.quant_param));
     }
@@ -143,7 +186,7 @@ Status BaseOpBuilder::ProcessOutputs(QnnModelWrapper& qnn_model_wrapper,
       QnnTensorWrapper cast_input_tensorwrapper(cast_input_name,
                                                 QNN_TENSOR_TYPE_NATIVE,
                                                 supported_qnn_data_type,
-                                                output_info.quant_param,
+                                                output_info.quant_param.Copy(),
                                                 std::move(cast_output_shape));
       ORT_RETURN_IF_NOT(qnn_model_wrapper.AddTensorWrapper(std::move(cast_input_tensorwrapper)), "Failed to add tensor.");
       output_names.push_back(cast_input_name);
@@ -156,12 +199,12 @@ Status BaseOpBuilder::ProcessOutputs(QnnModelWrapper& qnn_model_wrapper,
     QnnTensorWrapper output_tensorwrapper(output_name,
                                           tensor_type,
                                           output_info.qnn_data_type,
-                                          output_info.quant_param,
+                                          std::move(output_info.quant_param),
                                           std::move(output_info.shape));
     ORT_RETURN_IF_NOT(qnn_model_wrapper.AddTensorWrapper(std::move(output_tensorwrapper)), "Failed to add tensor.");
   }
 
-  ORT_RETURN_IF_NOT(qnn_model_wrapper.CreateQnnNode(GetNodeName(node_unit),
+  ORT_RETURN_IF_NOT(qnn_model_wrapper.CreateQnnNode(utils::GetNodeName(node_unit),
                                                     QNN_OP_PACKAGE_NAME_QTI_AISW,
                                                     qnn_op_type,  // Typically GetQnnOpType(), but can be overridden.
                                                     std::move(input_names),
@@ -189,15 +232,15 @@ Status BaseOpBuilder::SetOutputQParamEqualToInputIfNearlyEqual(QnnModelWrapper& 
                                                                size_t input_index,
                                                                size_t output_index,
                                                                Qnn_DataType_t qnn_data_type,
-                                                               Qnn_QuantizeParams_t& quant_param) const {
+                                                               QnnQuantParamsWrapper& quant_param) const {
   const QnnTensorWrapper& input_tensor_wrapper = qnn_model_wrapper.GetQnnTensorWrapper(input_names[input_index]);
   ORT_RETURN_IF_NOT(input_tensor_wrapper.GetTensorDataType() == qnn_data_type,
                     "Input and output data types do not match");
-  Qnn_QuantizeParams_t input_quant_param = GetQnnTensorQParams(input_tensor_wrapper.GetQnnTensor());
+  const QnnQuantParamsWrapper& input_quant_param = input_tensor_wrapper.GetQnnQuantParams();
 
   float scale_diff = 0.0f;
   int32_t offset_diff = 0;
-  ORT_RETURN_IF_ERROR(CompareQnnQuantParams(quant_param, input_quant_param, scale_diff, offset_diff));
+  ORT_RETURN_IF_ERROR(CompareQnnQuantParams(quant_param.Get(), input_quant_param.Get(), scale_diff, offset_diff));
   constexpr float NEARLY_EQUAL_THRESHOLD = 1e-9f;
   constexpr float WARN_THRESHOLD = 1e-6f;
 
@@ -222,34 +265,187 @@ Status BaseOpBuilder::SetOutputQParamEqualToInputIfNearlyEqual(QnnModelWrapper& 
   return Status::OK();
 }
 
-Status BaseOpBuilder::TransposeInitializer(const QnnModelWrapper& qnn_model_wrapper,
-                                           const onnx::TensorProto& initializer,
-                                           const std::vector<size_t>& perm,
-                                           std::vector<uint8_t>& transposed_data) const {
-  const DataTypeImpl* tensor_dtype = DataTypeImpl::TensorTypeFromONNXEnum(initializer.data_type())->GetElementType();
-  const auto tensor_shape_dims = onnxruntime::utils::GetTensorShapeFromTensorProto(initializer);
-  TensorShape tensor_shape{tensor_shape_dims};
-  AllocatorPtr cpu_allocator = std::make_shared<CPUAllocator>();
-  Tensor in_tensor = Tensor(tensor_dtype, tensor_shape, cpu_allocator);
+static Status GetTransposeStrides(const TensorShape& input_shape,
+                                  gsl::span<const size_t> perm,
+                                  gsl::span<size_t> input_strides,
+                                  gsl::span<size_t> output_strides) {
+  const size_t rank = input_shape.NumDimensions();
+  ORT_RETURN_IF_NOT(perm.size() == rank, "Expected perm size of ", rank);
+  ORT_RETURN_IF_NOT(input_strides.size() == rank, "Expected input_strides size of ", rank);
+  ORT_RETURN_IF_NOT(output_strides.size() == rank, "Expected output_strides size of ", rank);
+  std::vector<int64_t> output_shape_dims(rank);
+  ORT_RETURN_IF_ERROR((qnn::utils::PermuteShape<int64_t, size_t>(input_shape.GetDims(), perm, output_shape_dims)));
+  const TensorShape output_shape = TensorShape::FromExistingBuffer(output_shape_dims);
 
-  auto rank = perm.size();
-  std::vector<int64_t> new_tensor_shape_dims;
-  std::vector<size_t> permutations;
-  new_tensor_shape_dims.reserve(rank);
-  permutations.reserve(rank);
-  for (int64_t p : perm) {
-    permutations.push_back(p);
-    new_tensor_shape_dims.push_back(tensor_shape_dims[p]);
+  for (size_t i = 0; i < rank; ++i) {
+    int64_t stride = (i < rank - 1) ? input_shape.SizeFromDimension(i + 1) : 1;
+    ORT_RETURN_IF_NOT(stride > 0, "Expected positive shape dims when computing strides.");
+    input_strides[i] = static_cast<size_t>(stride);
   }
 
-  TensorShape new_tensor_shape(new_tensor_shape_dims);
-  Tensor out_tensor = Tensor(tensor_dtype, new_tensor_shape, cpu_allocator);
-  ORT_RETURN_IF_ERROR(onnxruntime::utils::TensorProtoToTensor(Env::Default(), nullptr, initializer, in_tensor));
-  ORT_RETURN_IF_ERROR(Transpose::DoTranspose(permutations, in_tensor, out_tensor));
-  onnx::TensorProto new_tensor_proto = onnxruntime::utils::TensorToTensorProto(out_tensor, "test");
-  ORT_RETURN_IF_ERROR(qnn_model_wrapper.UnpackInitializerData(new_tensor_proto, transposed_data));
+  for (size_t i = 0; i < rank; ++i) {
+    int64_t stride = (i < rank - 1) ? output_shape.SizeFromDimension(i + 1) : 1;
+    ORT_RETURN_IF_NOT(stride > 0, "Expected positive shape dims when computing strides.");
+    output_strides[i] = static_cast<size_t>(stride);
+  }
 
   return Status::OK();
+}
+
+// Internal function to transpose data of rank 5 with the given permutation.
+// Example: transpose input from either (N,C,H,W,D) or (C,N,H,W,D) to (H,W,D,C,N).
+static Status TransposeDataRank5(const TensorShape& input_shape,
+                                 gsl::span<const size_t> perm,
+                                 size_t elem_byte_size,
+                                 gsl::span<const uint8_t> input_buffer,
+                                 gsl::span<uint8_t> output_buffer) {
+  std::array<size_t, 5> input_strides = {};
+  std::array<size_t, 5> output_strides = {};
+  ORT_RETURN_IF_ERROR(GetTransposeStrides(input_shape, perm, input_strides, output_strides));
+
+  std::vector<size_t> perm_inverse(perm.size());
+  ORT_RETURN_IF_ERROR(qnn::utils::InvertPerm<size_t>(perm, perm_inverse));
+
+  for (int64_t d0 = 0; d0 < input_shape[0]; ++d0) {
+    for (int64_t d1 = 0; d1 < input_shape[1]; ++d1) {
+      for (int64_t d2 = 0; d2 < input_shape[2]; ++d2) {
+        for (int64_t d3 = 0; d3 < input_shape[3]; ++d3) {
+          for (int64_t d4 = 0; d4 < input_shape[4]; ++d4) {
+            const size_t src_elem_index = ((d0 * input_strides[0]) +
+                                           (d1 * input_strides[1]) +
+                                           (d2 * input_strides[2]) +
+                                           (d3 * input_strides[3]) +
+                                           (d4 * input_strides[4]));
+            const size_t dst_elem_index = ((d0 * output_strides[perm_inverse[0]]) +
+                                           (d1 * output_strides[perm_inverse[1]]) +
+                                           (d2 * output_strides[perm_inverse[2]]) +
+                                           (d3 * output_strides[perm_inverse[3]]) +
+                                           (d4 * output_strides[perm_inverse[4]]));
+
+            const size_t src_byte_index = src_elem_index * elem_byte_size;
+            const size_t dst_byte_index = dst_elem_index * elem_byte_size;
+            assert(src_byte_index < input_buffer.size());
+            assert(dst_byte_index < output_buffer.size());
+
+            std::memcpy(&output_buffer[dst_byte_index], &input_buffer[src_byte_index], elem_byte_size);
+          }
+        }
+      }
+    }
+  }
+
+  return Status::OK();
+}
+
+Status BaseOpBuilder::TwoDimensionTranspose(const QnnModelWrapper& qnn_model_wrapper,
+                                            std::vector<uint32_t>& data_shape,
+                                            const onnx::TensorProto& initializer,
+                                            std::vector<uint8_t>& transposed_data) const {
+  ORT_RETURN_IF_NOT(data_shape.size() == 2, "Expected shape of rank 2");
+
+  std::array<size_t, 2> perm = {1, 0};
+  std::vector<uint32_t> output_shape(data_shape.size());
+  ORT_RETURN_IF_ERROR((qnn::utils::PermuteShape<uint32_t, size_t>(data_shape, perm, output_shape)));
+
+  auto onnx_type = static_cast<ONNX_NAMESPACE::TensorProto_DataType>(initializer.data_type());
+  const size_t elem_byte_size = qnn::utils::GetElementSizeByType(onnx_type);
+  ORT_RETURN_IF_NOT(elem_byte_size != 0, "Can't get element byte size from given ONNX type");
+
+  std::vector<uint8_t> input_buffer;
+  ORT_RETURN_IF_ERROR(qnn_model_wrapper.UnpackInitializerData(initializer, input_buffer));
+  transposed_data.resize(input_buffer.size());
+
+  for (size_t row = 0; row < data_shape[0]; row++) {
+    for (size_t col = 0; col < data_shape[1]; col++) {
+      const size_t src_elem_index = (row * data_shape[1] + col);
+      const size_t dst_elem_index = (col * output_shape[1] + row);
+      const size_t src_byte_index = src_elem_index * elem_byte_size;
+      const size_t dst_byte_index = dst_elem_index * elem_byte_size;
+      assert(src_byte_index < input_buffer.size());
+      assert(dst_byte_index < transposed_data.size());
+
+      std::memcpy(&transposed_data[dst_byte_index], &input_buffer[src_byte_index], elem_byte_size);
+    }
+  }
+
+  data_shape = std::move(output_shape);  // Update parameter with final transposed shape
+  return Status::OK();
+}
+
+Status BaseOpBuilder::TransposeFromNchwToHwcn(const QnnModelWrapper& qnn_model_wrapper,
+                                              const onnx::TensorProto& initializer,
+                                              std::vector<uint8_t>& transposed_data,
+                                              bool is_3d) const {
+  auto onnx_type = static_cast<ONNX_NAMESPACE::TensorProto_DataType>(initializer.data_type());
+  const size_t elem_byte_size = qnn::utils::GetElementSizeByType(onnx_type);
+  std::vector<int64_t> input_shape = qnn::utils::GetInitializerShape<int64_t>(initializer);
+  std::vector<uint8_t> input_buffer;
+  ORT_RETURN_IF_ERROR(qnn_model_wrapper.UnpackInitializerData(initializer, input_buffer));
+  transposed_data.resize(input_buffer.size());
+  return TransposeFromNchwToHwcn(std::move(input_shape), elem_byte_size, input_buffer, transposed_data, is_3d);
+}
+
+Status BaseOpBuilder::TransposeFromNchwToHwcn(std::vector<int64_t>&& original_input_shape_dims,
+                                              size_t elem_byte_size,
+                                              gsl::span<const uint8_t> input_buffer,
+                                              gsl::span<uint8_t> output_buffer,
+                                              bool is_3d) const {
+  std::vector<int64_t> input_shape_dims = std::move(original_input_shape_dims);
+  const size_t rank = input_shape_dims.size();
+  ORT_RETURN_IF_NOT((is_3d && rank == 5) || (!is_3d && rank == 4), "Only support input of rank 4 or 5 but got rank ",
+                    rank);
+  ORT_RETURN_IF_NOT(output_buffer.size() == input_buffer.size(),
+                    "Expected output buffer's size to equal the input buffer's size: ",
+                    output_buffer.size(), " != ", input_buffer.size());
+  ORT_RETURN_IF_NOT(elem_byte_size != 0, "Invalid element byte size due to potentially unsupported type");
+
+  if (!is_3d) {
+    input_shape_dims.push_back(1);  // Make it 3D by making shape (N,C,H,W,1)
+  }
+
+  return TransposeDataRank5(TensorShape::FromExistingBuffer(input_shape_dims),
+                            nchw2hwcn_perm_3d,
+                            elem_byte_size,
+                            input_buffer,
+                            output_buffer);
+}
+
+Status BaseOpBuilder::TransposeFromCnhwToHwcn(const QnnModelWrapper& qnn_model_wrapper,
+                                              const onnx::TensorProto& initializer,
+                                              std::vector<uint8_t>& transposed_data,
+                                              bool is_3d) const {
+  auto onnx_type = static_cast<ONNX_NAMESPACE::TensorProto_DataType>(initializer.data_type());
+  const size_t elem_byte_size = qnn::utils::GetElementSizeByType(onnx_type);
+  std::vector<int64_t> input_shape = qnn::utils::GetInitializerShape<int64_t>(initializer);
+  std::vector<uint8_t> input_buffer;
+  ORT_RETURN_IF_ERROR(qnn_model_wrapper.UnpackInitializerData(initializer, input_buffer));
+  transposed_data.resize(input_buffer.size());
+  return TransposeFromCnhwToHwcn(std::move(input_shape), elem_byte_size, input_buffer, transposed_data, is_3d);
+}
+
+Status BaseOpBuilder::TransposeFromCnhwToHwcn(std::vector<int64_t>&& original_input_shape_dims,
+                                              size_t elem_byte_size,
+                                              gsl::span<const uint8_t> input_buffer,
+                                              gsl::span<uint8_t> output_buffer,
+                                              bool is_3d) const {
+  std::vector<int64_t> input_shape_dims = std::move(original_input_shape_dims);
+  const size_t rank = input_shape_dims.size();
+  ORT_RETURN_IF_NOT((is_3d && rank == 5) || (!is_3d && rank == 4), "Only support input of rank 4 or 5 but got rank ",
+                    rank);
+  ORT_RETURN_IF_NOT(output_buffer.size() == input_buffer.size(),
+                    "Expected output buffer's size to equal the input buffer's size: ",
+                    output_buffer.size(), " != ", input_buffer.size());
+  ORT_RETURN_IF_NOT(elem_byte_size != 0, "Invalid element byte size due to potentially unsupported type");
+
+  if (!is_3d) {
+    input_shape_dims.push_back(1);  // Make it 3D by making shape (C,N,H,W,1)
+  }
+
+  return TransposeDataRank5(TensorShape::FromExistingBuffer(input_shape_dims),
+                            cnhw2hwcn_perm_3d,
+                            elem_byte_size,
+                            input_buffer,
+                            output_buffer);
 }
 
 Status BaseOpBuilder::ProcessAxisAttribute(const QnnModelWrapper& qnn_model_wrapper,
@@ -266,7 +462,7 @@ Status BaseOpBuilder::ProcessAxisAttribute(const QnnModelWrapper& qnn_model_wrap
   if (onnx_axis < 0) {
     onnx_axis += rank;
   }
-  ORT_ENFORCE((onnx_axis >= 0 && onnx_axis < static_cast<int32_t>(input_shape.size())), "QNN requires axis range [0, rank-1].");
+  ORT_RETURN_IF_NOT((onnx_axis >= 0 && onnx_axis < static_cast<int32_t>(input_shape.size())), "QNN requires axis range [0, rank-1].");
   default_axis_value = onnx_axis;
 
   bool is_gather_op = (node_unit.OpType() == "Gather");
@@ -279,18 +475,6 @@ Status BaseOpBuilder::ProcessAxisAttribute(const QnnModelWrapper& qnn_model_wrap
   }
 
   return Status::OK();
-}
-
-Qnn_TensorType_t BaseOpBuilder::GetInputTensorType(const QnnModelWrapper& qnn_model_wrapper, const std::string& input_name) const {
-  if (qnn_model_wrapper.IsInitializerInput(input_name)) {
-    return QNN_TENSOR_TYPE_STATIC;
-  } else if (qnn_model_wrapper.IsGraphInput(input_name)) {
-    return QNN_TENSOR_TYPE_APP_WRITE;
-  } else if (qnn_model_wrapper.IsGraphOutput(input_name)) {
-    return QNN_TENSOR_TYPE_APP_READ;
-  } else {
-    return QNN_TENSOR_TYPE_NATIVE;
-  }
 }
 
 Status DataTypeCheckForCpuBackend(QnnModelWrapper& qnn_model_wrapper, ONNX_NAMESPACE::DataType onnx_tensor_data_type) {

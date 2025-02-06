@@ -11,8 +11,9 @@ import sys
 import tempfile
 
 from c.assemble_c_pod_package import assemble_c_pod_package
-from objectivec.assemble_objc_pod_package import assemble_objc_pod_package
 from package_assembly_utils import PackageVariant, get_ort_version
+
+from objectivec.assemble_objc_pod_package import assemble_objc_pod_package
 
 SCRIPT_PATH = pathlib.Path(__file__).resolve()
 SCRIPT_DIR = SCRIPT_PATH.parent
@@ -52,11 +53,16 @@ def parse_args():
     parser.add_argument(
         "--variant",
         choices=PackageVariant.release_variant_names(),
-        default=PackageVariant.Mobile.name,
+        default=PackageVariant.Full.name,
         help="Pod package variant.",
     )
 
     parser.add_argument("--test", action="store_true", help="Run tests on the framework and pod package files.")
+    parser.add_argument(
+        "--skip-build",
+        action="store_true",
+        help="Use build from previous run. Useful to debug test issues or packaging changes.",
+    )
 
     build_framework_group = parser.add_argument_group(
         title="iOS framework build arguments",
@@ -86,9 +92,7 @@ def run(arg_list, cwd=None):
     import shlex
     import subprocess
 
-    log.info(
-        "Running subprocess in '{}'\n  {}".format(cwd or os.getcwd(), " ".join([shlex.quote(arg) for arg in arg_list]))
-    )
+    log.info("Running subprocess in '%s'\n  %s", cwd or os.getcwd(), " ".join([shlex.quote(arg) for arg in arg_list]))
 
     return subprocess.run(arg_list, check=True, cwd=cwd)
 
@@ -116,7 +120,8 @@ def main():
 
     build_apple_framework_args += ["--build_dir", str(build_dir), args.build_settings_file]
 
-    run(build_apple_framework_args)
+    if not args.skip_build:
+        run(build_apple_framework_args)
 
     if args.test:
         test_apple_packages_args = [
@@ -129,6 +134,8 @@ def main():
             str(build_dir / "framework_out"),
             "--variant",
             package_variant.name,
+            "--test_project_stage_dir",  # use a specific directory so it's easier to debug
+            str(build_dir / "test_apple_packages_staging"),
         ]
 
         run(test_apple_packages_args)
@@ -173,7 +180,8 @@ def main():
         def move_dir(src, dst):
             if dst.is_dir():
                 shutil.rmtree(dst)
-            shutil.move(src, dst)
+            shutil.copytree(src, dst, symlinks=True)
+            shutil.rmtree(src)
 
         move_dir(c_pod_staging_dir, staging_dir / c_pod_name)
         move_dir(objc_pod_staging_dir, staging_dir / objc_pod_name)

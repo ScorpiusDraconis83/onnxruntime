@@ -331,9 +331,9 @@ class TinyGpt2Model(OnnxModel):
                 reshapes[initializer.name] = new_shape
                 print("initializer", initializer.name, tensor.shape, "=>", new_shape)
 
-        for initializer_name in reshapes:
+        for initializer_name, reshape_name in reshapes.items():
             self.replace_input_of_all_nodes(initializer_name, initializer_name + "_resize")
-            tensor = self.resize_weight(initializer_name, reshapes[initializer_name])
+            tensor = self.resize_weight(initializer_name, reshape_name)
             self.model.graph.initializer.extend([tensor])
 
         # Add node name, replace split node attribute.
@@ -452,9 +452,9 @@ def generate_test_data(
         try:
             os.mkdir(path)
         except OSError:
-            print("Creation of the directory %s failed" % path)
+            print(f"Creation of the directory {path} failed")
         else:
-            print("Successfully created the directory %s " % path)
+            print(f"Successfully created the directory {path} ")
 
         sess_options = onnxruntime.SessionOptions()
         sess_options.graph_optimization_level = onnxruntime.GraphOptimizationLevel.ORT_DISABLE_ALL

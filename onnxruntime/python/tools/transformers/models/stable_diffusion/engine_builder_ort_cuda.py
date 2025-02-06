@@ -6,7 +6,6 @@
 import gc
 import logging
 import os
-from typing import List, Optional
 
 import onnx
 import torch
@@ -15,25 +14,25 @@ from engine_builder import EngineBuilder, EngineType
 from packaging import version
 
 import onnxruntime as ort
-from onnxruntime.transformers.io_binding_helper import CudaSession
+from onnxruntime.transformers.io_binding_helper import CudaSession, GpuBindingManager
 from onnxruntime.transformers.onnx_model import OnnxModel
 
 logger = logging.getLogger(__name__)
 
 
-class OrtCudaEngine(CudaSession):
+class OrtCudaEngine:
     def __init__(
         self,
         onnx_path,
         device_id: int = 0,
         enable_cuda_graph: bool = False,
         disable_optimization: bool = False,
+        max_cuda_graphs: int = 1,
     ):
         self.onnx_path = onnx_path
         self.provider = "CUDAExecutionProvider"
-        self.provider_options = CudaSession.get_cuda_provider_options(device_id, enable_cuda_graph)
-        # self.provider_options["enable_skip_layer_norm_strict_mode"] = True
-
+        self.stream = torch.cuda.current_stream().cuda_stream
+        self.provider_options = CudaSession.get_cuda_provider_options(device_id, enable_cuda_graph, self.stream)
         session_options = ort.SessionOptions()
 
         # When the model has been optimized by onnxruntime, we can disable optimization to save session creation time.
@@ -52,10 +51,33 @@ class OrtCudaEngine(CudaSession):
         logger.info("created CUDA EP session for %s", onnx_path)
 
         device = torch.device("cuda", device_id)
-        super().__init__(ort_session, device, enable_cuda_graph)
+        self.enable_cuda_graph = enable_cuda_graph
+
+        # Support multiple CUDA graphs for different input shapes.
+        # For clip2 model that disabled cuda graph, max_cuda_graphs is updated to 0 here.
+        self.gpu_binding_manager = GpuBindingManager(
+            ort_session=ort_session,
+            device=device,
+            stream=self.stream,
+            max_cuda_graphs=max_cuda_graphs if enable_cuda_graph else 0,
+        )
+
+        self.current_gpu_binding = None
+
+    def metadata(self, name: str):
+        data = {}
+        if self.current_gpu_binding is not None:
+            if self.current_gpu_binding.last_run_gpu_graph_id >= 0:
+                data[f"{name}.gpu_graph_id"] = self.current_gpu_binding.last_run_gpu_graph_id
+        return data
+
+    def infer(self, feed_dict: dict[str, torch.Tensor]):
+        return self.current_gpu_binding.infer(feed_dict=feed_dict, disable_cuda_graph_in_run=not self.enable_cuda_graph)
 
     def allocate_buffers(self, shape_dict, device):
-        super().allocate_buffers(shape_dict)
+        self.current_gpu_binding = self.gpu_binding_manager.get_binding(
+            shape_dict=shape_dict, use_cuda_graph=self.enable_cuda_graph
+        )
 
 
 class _ModelConfig:
@@ -70,7 +92,7 @@ class _ModelConfig:
         onnx_opset_version: int,
         use_cuda_graph: bool,
         fp16: bool = True,
-        force_fp32_ops: Optional[List[str]] = None,
+        force_fp32_ops: list[str] | None = None,
         optimize_by_ort: bool = True,
     ):
         self.onnx_opset_version = onnx_opset_version
@@ -117,7 +139,7 @@ class OrtCudaEngineBuilder(EngineBuilder):
         onnx_opset_version: int,
         use_cuda_graph: bool,
         fp16: bool = True,
-        force_fp32_ops: Optional[List[str]] = None,
+        force_fp32_ops: list[str] | None = None,
         optimize_by_ort: bool = True,
     ):
         self.model_config[model_name] = _ModelConfig(
@@ -215,11 +237,12 @@ class OrtCudaEngineBuilder(EngineBuilder):
         engine_dir: str,
         framework_model_dir: str,
         onnx_dir: str,
-        tmp_dir: Optional[str] = None,
+        tmp_dir: str | None = None,
         onnx_opset_version: int = 17,
         device_id: int = 0,
         save_fp32_intermediate_model: bool = False,
-        import_engine_dir: Optional[str] = None,
+        import_engine_dir: str | None = None,
+        max_cuda_graphs: int = 1,
     ):
         self.torch_device = torch.device("cuda", device_id)
         self.load_models(framework_model_dir)
@@ -352,6 +375,7 @@ class OrtCudaEngineBuilder(EngineBuilder):
                 device_id=device_id,
                 enable_cuda_graph=use_cuda_graph,
                 disable_optimization=False,
+                max_cuda_graphs=max_cuda_graphs,
             )
 
             logger.info("%s options for %s: %s", engine.provider, model_name, engine.provider_options)

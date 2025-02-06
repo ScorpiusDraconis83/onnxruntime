@@ -9,7 +9,8 @@ import collections.abc
 import os
 import typing
 import warnings
-from typing import Any, Sequence
+from collections.abc import Sequence
+from typing import Any
 
 from onnxruntime.capi import _pybind_state as C
 
@@ -26,10 +27,58 @@ def get_ort_device_type(device_type: str, device_index) -> C.OrtDevice:
         return C.OrtDevice.cpu()
     elif device_type == "dml":
         return C.OrtDevice.dml()
+    elif device_type == "webgpu":
+        return C.OrtDevice.webgpu()
     elif device_type == "ort":
         return C.get_ort_device(device_index).device_type()
     else:
         raise Exception("Unsupported device type: " + device_type)
+
+
+class AdapterFormat:
+    """
+    This class is used to create adapter files from python structures
+    """
+
+    def __init__(self, adapter=None) -> None:
+        if adapter is None:
+            self._adapter = C.AdapterFormat()
+        else:
+            self._adapter = adapter
+
+    @staticmethod
+    def read_adapter(file_path: os.PathLike) -> AdapterFormat:
+        return AdapterFormat(C.AdapterFormat.read_adapter(file_path))
+
+    def export_adapter(self, file_path: os.PathLike):
+        """
+        This function writes a file at the specified location
+        in onnxrunitme adapter format containing Lora parameters.
+
+        :param file_path: absolute path for the adapter
+        """
+        self._adapter.export_adapter(file_path)
+
+    def get_format_version(self):
+        return self._adapter.format_version
+
+    def set_adapter_version(self, adapter_version: int):
+        self._adapter.adapter_version = adapter_version
+
+    def get_adapter_version(self):
+        return self._adapter.adapter_version
+
+    def set_model_version(self, model_version: int):
+        self._adapter.model_version = model_version
+
+    def get_model_version(self):
+        return self._adapter.model_version
+
+    def set_parameters(self, params: dict[str, OrtValue]):
+        self._adapter.parameters = {k: v._ortvalue for k, v in params.items()}
+
+    def get_parameters(self) -> dict[str, OrtValue]:
+        return {k: OrtValue(v) for k, v in self._adapter.parameters.items()}
 
 
 def check_and_normalize_provider_args(
@@ -67,8 +116,9 @@ def check_and_normalize_provider_args(
     def set_provider_options(name, options):
         if name not in available_provider_names:
             warnings.warn(
-                "Specified provider '{}' is not in available provider names."
-                "Available providers: '{}'".format(name, ", ".join(available_provider_names))
+                "Specified provider '{}' is not in available provider names.Available providers: '{}'".format(
+                    name, ", ".join(available_provider_names)
+                )
             )
 
         if name in provider_name_to_options:
@@ -88,19 +138,19 @@ def check_and_normalize_provider_args(
         if len(providers) != len(provider_options):
             raise ValueError("'providers' and 'provider_options' should be the same length if both are given.")
 
-        if not all([isinstance(provider, str) for provider in providers]):
+        if not all(isinstance(provider, str) for provider in providers):
             raise ValueError("Only string values for 'providers' are supported if 'provider_options' is given.")
 
-        if not all([isinstance(options_for_provider, dict) for options_for_provider in provider_options]):
+        if not all(isinstance(options_for_provider, dict) for options_for_provider in provider_options):
             raise ValueError("'provider_options' values must be dicts.")
 
-        for name, options in zip(providers, provider_options):
+        for name, options in zip(providers, provider_options, strict=False):
             set_provider_options(name, options)
 
     else:
         for provider in providers:
             if isinstance(provider, str):
-                set_provider_options(provider, dict())
+                set_provider_options(provider, {})
             elif (
                 isinstance(provider, tuple)
                 and len(provider) == 2
@@ -358,7 +408,7 @@ class InferenceSession(Session):
     def __init__(
         self,
         path_or_bytes: str | bytes | os.PathLike,
-        sess_options: Sequence[onnxruntime.SessionOptions] | None = None,
+        sess_options: onnxruntime.SessionOptions | None = None,
         providers: Sequence[str | tuple[str, dict[Any, Any]]] | None = None,
         provider_options: Sequence[dict[Any, Any]] | None = None,
         **kwargs,
@@ -413,7 +463,7 @@ class InferenceSession(Session):
             self._read_config_from_model = os.environ.get("ORT_LOAD_CONFIG_FROM_MODEL") == "1"
 
         # internal parameters that we don't expect to be used in general so aren't documented
-        disabled_optimizers = kwargs["disabled_optimizers"] if "disabled_optimizers" in kwargs else None
+        disabled_optimizers = kwargs.get("disabled_optimizers")
 
         try:
             self._create_inference_session(providers, provider_options, disabled_optimizers)
@@ -438,10 +488,18 @@ class InferenceSession(Session):
 
         # Tensorrt can fall back to CUDA if it's explicitly assigned. All others fall back to CPU.
         if "TensorrtExecutionProvider" in available_providers:
-            if providers and any(
-                provider == "CUDAExecutionProvider"
-                or (isinstance(provider, tuple) and provider[0] == "CUDAExecutionProvider")
-                for provider in providers
+            if (
+                providers
+                and any(
+                    provider == "CUDAExecutionProvider"
+                    or (isinstance(provider, tuple) and provider[0] == "CUDAExecutionProvider")
+                    for provider in providers
+                )
+                and any(
+                    provider == "TensorrtExecutionProvider"
+                    or (isinstance(provider, tuple) and provider[0] == "TensorrtExecutionProvider")
+                    for provider in providers
+                )
             ):
                 self._fallback_providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
             else:
@@ -466,7 +524,7 @@ class InferenceSession(Session):
 
         session_options = self._sess_options if self._sess_options else C.get_default_session_options()
 
-        self._register_ep_custom_ops(session_options, providers, provider_options)
+        self._register_ep_custom_ops(session_options, providers, provider_options, available_providers)
 
         if self._model_path:
             sess = C.InferenceSession(session_options, self._model_path, True, self._read_config_from_model)
@@ -510,11 +568,15 @@ class InferenceSession(Session):
         self._sess_options = self._sess_options_initial
         self._create_inference_session(providers, provider_options)
 
-    def _register_ep_custom_ops(self, session_options, providers, provider_options):
+    def _register_ep_custom_ops(self, session_options, providers, provider_options, available_providers):
         for i in range(len(providers)):
-            if providers[i] == "TensorrtExecutionProvider":
+            if providers[i] in available_providers and providers[i] == "TensorrtExecutionProvider":
                 C.register_tensorrt_plugins_as_custom_ops(session_options, provider_options[i])
-            elif isinstance(providers[i], tuple) and providers[i][0] == "TensorrtExecutionProvider":
+            elif (
+                isinstance(providers[i], tuple)
+                and providers[i][0] in available_providers
+                and providers[i][0] == "TensorrtExecutionProvider"
+            ):
                 C.register_tensorrt_plugins_as_custom_ops(session_options, providers[i][1])
 
 
@@ -544,7 +606,7 @@ class IOBinding:
         :param name: input name
         :param device_type: e.g. cpu, cuda, cann
         :param device_id: device id, e.g. 0
-        :param element_type: input element type
+        :param element_type: input element type. It can be either numpy type (like numpy.float32) or an integer for onnx type (like onnx.TensorProto.BFLOAT16)
         :param shape: input shape
         :param buffer_ptr: memory pointer to input data
         """
@@ -583,7 +645,7 @@ class IOBinding:
         :param name: output name
         :param device_type: e.g. cpu, cuda, cann, cpu by default
         :param device_id: device id, e.g. 0
-        :param element_type: output element type
+        :param element_type: output element type. It can be either numpy type (like numpy.float32) or an integer for onnx type (like onnx.TensorProto.BFLOAT16)
         :param shape: output shape
         :param buffer_ptr: memory pointer to output data
         """
@@ -642,7 +704,7 @@ class IOBinding:
         return self._iobinding.get_outputs()
 
     def copy_outputs_to_cpu(self):
-        """Copy output contents to CPU (if on another device). No-op if already on the CPU."""
+        """Copy output contents to CPU."""
         return self._iobinding.copy_outputs_to_cpu()
 
     def clear_binding_inputs(self):
@@ -700,17 +762,43 @@ class OrtValue:
         )
 
     @staticmethod
-    def ortvalue_from_shape_and_type(shape=None, element_type=None, device_type="cpu", device_id=0):
+    def ortvalue_from_numpy_with_onnx_type(data, onnx_element_type: int):
+        """
+        This method creates an instance of OrtValue on top of the numpy array.
+        No data copy is made and the lifespan of the resulting OrtValue should never
+        exceed the lifespan of bytes object. The API attempts to reinterpret
+        the data type which is expected to be the same size. This is useful
+        when we want to use an ONNX data type that is not supported by numpy.
+
+        :param data: numpy.ndarray.
+        :param onnx_elemenet_type: a valid onnx TensorProto::DataType enum value
+        """
+        return OrtValue(C.OrtValue.ortvalue_from_numpy_with_onnx_type(data, onnx_element_type), data)
+
+    @staticmethod
+    def ortvalue_from_shape_and_type(shape, element_type, device_type: str = "cpu", device_id: int = 0):
         """
         Factory method to construct an OrtValue (which holds a Tensor) from given shape and element_type
 
         :param shape: List of integers indicating the shape of the OrtValue
-        :param element_type: The data type of the elements in the OrtValue (numpy type)
+        :param element_type: The data type of the elements. It can be either numpy type (like numpy.float32) or an integer for onnx type (like onnx.TensorProto.BFLOAT16).
         :param device_type: e.g. cpu, cuda, cann, cpu by default
         :param device_id: device id, e.g. 0
         """
-        if shape is None or element_type is None:
-            raise ValueError("`element_type` and `shape` are to be provided if pre-allocated memory is provided")
+        # Integer for onnx element type (see https://onnx.ai/onnx/api/mapping.html).
+        # This is helpful for some data type (like TensorProto.BFLOAT16) that is not available in numpy.
+        if isinstance(element_type, int):
+            return OrtValue(
+                C.OrtValue.ortvalue_from_shape_and_onnx_type(
+                    shape,
+                    element_type,
+                    C.OrtDevice(
+                        get_ort_device_type(device_type, device_id),
+                        C.OrtDevice.default_memory(),
+                        device_id,
+                    ),
+                )
+            )
 
         return OrtValue(
             C.OrtValue.ortvalue_from_shape_and_type(

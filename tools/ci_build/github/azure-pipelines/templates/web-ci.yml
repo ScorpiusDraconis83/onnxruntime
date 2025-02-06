@@ -23,6 +23,10 @@ parameters:
   displayName: 'Build JSEP'
   type: boolean
   default: true
+- name: BuildWebGPU
+  displayName: 'Build WebGPU (EP)'
+  type: boolean
+  default: true
 
 - name: WASMTemplate
   type: string
@@ -39,10 +43,10 @@ parameters:
   default: false
 - name: WebGpuPoolName
   type: string
-  default: 'onnxruntime-Win2022-webgpu-A10'
+  default: 'onnxruntime-Win2022-VS2022-webgpu-A10'
 - name: WebCpuPoolName
   type: string
-  default: 'onnxruntime-Win-CPU-2022-web'
+  default: 'onnxruntime-Win2022-VS2022-webgpu-A10'
 
 - name: ExtraBuildArgs
   displayName: 'Extra build command line arguments'
@@ -73,7 +77,7 @@ stages:
       displayName: 'Checkout submodule onnx'
     - task: NodeTool@0
       inputs:
-        versionSpec: '18.x'
+        versionSpec: '20.x'
     - template: linux-web-init-and-check.yml
     - task: Bash@3
       displayName: 'Extract commit SHA and save to __commit.txt'
@@ -95,9 +99,10 @@ stages:
     parameters:
       CommitOverride: true
       BuildConfig: 'Debug'
-      ExtraBuildArgs: '--use_extensions --cmake_extra_defines onnxruntime_WEBASSEMBLY_DEFAULT_EXTENSION_FLAGS=ON ${{ parameters.ExtraBuildArgs }}'
+      ExtraBuildArgs: '--enable_wasm_profiling ${{ parameters.ExtraBuildArgs }}'
       PoolName: ${{ parameters.PoolName }}
       BuildJsep: ${{ parameters.BuildJsep }}
+      BuildWebGPU: ${{ parameters.BuildWebGPU }}
       WithCache: ${{ parameters.WithCache }}
 
 - stage: Build_web_Debug
@@ -125,9 +130,10 @@ stages:
     parameters:
       CommitOverride: true
       BuildConfig: 'Release'
-      ExtraBuildArgs: '--target onnxruntime_webassembly --skip_tests --enable_wasm_api_exception_catching --disable_rtti --use_extensions --cmake_extra_defines onnxruntime_WEBASSEMBLY_DEFAULT_EXTENSION_FLAGS=ON ${{ parameters.ExtraBuildArgs }}'
+      ExtraBuildArgs: '--target onnxruntime_webassembly --skip_tests --enable_wasm_api_exception_catching --disable_rtti ${{ parameters.ExtraBuildArgs }}'
       PoolName: ${{ parameters.PoolName }}
       BuildJsep: ${{ parameters.BuildJsep }}
+      BuildWebGPU: false
       WithCache: ${{ parameters.WithCache }}
 
 - ${{ if eq(parameters.BuildStaticLib, 'true') }}:

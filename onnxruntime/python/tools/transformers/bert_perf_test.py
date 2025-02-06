@@ -23,7 +23,6 @@ import timeit
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
 
 import numpy as np
 import psutil
@@ -55,8 +54,8 @@ class ModelSetting:
     segment_ids_name: str
     input_mask_name: str
     opt_level: int
-    input_tuning_results: Optional[str]
-    output_tuning_results: Optional[str]
+    input_tuning_results: str | None
+    output_tuning_results: str | None
     mask_type: int
 
 
@@ -232,9 +231,9 @@ def onnxruntime_inference(session, all_inputs, output_names):
 def to_string(model_path, session, test_setting):
     sess_options = session.get_session_options()
     option = f"model={os.path.basename(model_path)},"
-    option += "graph_optimization_level={},intra_op_num_threads={},".format(
-        sess_options.graph_optimization_level, sess_options.intra_op_num_threads
-    ).replace("GraphOptimizationLevel.ORT_", "")
+    option += f"graph_optimization_level={sess_options.graph_optimization_level},intra_op_num_threads={sess_options.intra_op_num_threads},".replace(
+        "GraphOptimizationLevel.ORT_", ""
+    )
 
     option += f"batch_size={test_setting.batch_size},sequence_length={test_setting.sequence_length},"
     option += f"test_cases={test_setting.test_cases},test_times={test_setting.test_times},"
@@ -597,7 +596,7 @@ def main():
         Path(args.model).parent,
         "perf_results_{}_B{}_S{}_{}.txt".format(
             "GPU" if args.use_gpu else "CPU",
-            "-".join([str(x) for x in sorted(list(batch_size_set))]),
+            "-".join([str(x) for x in sorted(batch_size_set)]),
             args.sequence_length,
             datetime.now().strftime("%Y%m%d-%H%M%S"),
         ),

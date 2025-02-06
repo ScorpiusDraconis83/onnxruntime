@@ -6,11 +6,11 @@
 import re
 import uuid
 from collections import defaultdict
-from typing import Any, List, Tuple
+from typing import Any
 
 import numpy as np
+import torch
 from onnx import GraphProto, NodeProto, TensorProto, helper, numpy_helper
-from onnx.mapping import TENSOR_TYPE_TO_NP_TYPE
 
 
 def gen_unique_name(prefix: str) -> str:
@@ -27,7 +27,7 @@ def _topological_sort_internal(node, visited, output_consumers, sorted_nodes):
 
 
 # Topological sort of nodes given the input names. The list of nodes contain both constant and non-constant nodes.
-def topological_sort(inputs: List[str], nodes: List[NodeProto]) -> List[NodeProto]:
+def topological_sort(inputs: list[str], nodes: list[NodeProto]) -> list[NodeProto]:
     const_nodes = []
     non_const_nodes = []
     for node in nodes:
@@ -73,17 +73,24 @@ def get_attribute(node: NodeProto, attr_name: str, default_value: Any = None) ->
     return default_value
 
 
-# Convert Constant node or TensorProto to numpy array.
-def to_numpy_array(node: Any) -> np.ndarray:
+# Convert Constant node or TensorProto to torch.Tensor.
+def to_torch_tensor(node: Any) -> torch.Tensor:
     tensor = node
     if isinstance(node, NodeProto):
         tensor = get_attribute(node, "value")
     assert isinstance(tensor, TensorProto)
-    return numpy_helper.to_array(tensor)
+    torch_tensor = torch.from_numpy(numpy_helper.to_array(tensor))
+    # numpy does not support bfloat16 and create a float32 tensor instead.
+    if tensor.data_type == TensorProto.BFLOAT16:
+        torch_tensor = torch_tensor.to(torch.bfloat16)
+    return torch_tensor
 
 
-def to_numpy_type(tensor_type: TensorProto.DataType) -> np.dtype:
-    return TENSOR_TYPE_TO_NP_TYPE[tensor_type] if not isinstance(tensor_type, np.dtype) else tensor_type
+def to_torch_dtype(tensor_type: TensorProto.DataType) -> torch.dtype:
+    # Native numpy does not support bfloat16.
+    if tensor_type == TensorProto.BFLOAT16:
+        return torch.bfloat16
+    return torch.from_numpy(np.zeros(1, dtype=helper.tensor_dtype_to_np_dtype(tensor_type))).dtype
 
 
 # Generate a unique variable name based on the node arg name.
@@ -112,7 +119,7 @@ def may_add_brackets(name: str) -> str:
     return name
 
 
-def sort_reduce_axes(axes: List[int], rank: int, check_contiguous: bool = True) -> List[int]:
+def sort_reduce_axes(axes: list[int], rank: int, check_contiguous: bool = True) -> list[int]:
     axes = [axis + rank if axis < 0 else axis for axis in axes]
     axes.sort()
     if check_contiguous:
@@ -122,7 +129,7 @@ def sort_reduce_axes(axes: List[int], rank: int, check_contiguous: bool = True) 
 
 
 # Get the keep_dims attribute and reduce axes from a reduce node.
-def get_reduce_info(node: NodeProto, graph: GraphProto, input_rank: int) -> Tuple[int, List[int]]:
+def get_reduce_info(node: NodeProto, graph: GraphProto, input_rank: int) -> tuple[int, list[int]]:
     keep_dims = get_attribute(node, "keepdims", 1)
     noop_with_empty_axes = get_attribute(node, "noop_with_empty_axes", 0)
     axes = get_attribute(node, "axes", None)
@@ -133,7 +140,7 @@ def get_reduce_info(node: NodeProto, graph: GraphProto, input_rank: int) -> Tupl
                 axes_initializer = initializer
                 break
         assert axes_initializer is not None
-        axes = to_numpy_array(axes_initializer).tolist()
+        axes = to_torch_tensor(axes_initializer).tolist()
     if axes is None:
         axes = list(range(input_rank)) if noop_with_empty_axes == 0 else []
     axes = sort_reduce_axes(axes, input_rank, check_contiguous=False)
@@ -141,12 +148,21 @@ def get_reduce_info(node: NodeProto, graph: GraphProto, input_rank: int) -> Tupl
 
 
 def next_power_of_2(n: int) -> int:
-    assert n <= 2**32, "32-bit only"
+    """Return the smallest power of 2 greater than or equal to n"""
     n -= 1
     n |= n >> 1
     n |= n >> 2
     n |= n >> 4
     n |= n >> 8
     n |= n >> 16
+    n |= n >> 32
     n += 1
     return n
+
+
+def is_number(name: str) -> bool:
+    try:
+        float(name)
+        return True
+    except ValueError:
+        return name.startswith("float(") and name.endswith(")")

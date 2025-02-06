@@ -20,6 +20,7 @@ Abstract:
 #include <cstddef>
 #include <cstdlib>
 #include <cstdint>
+#include <stdexcept>
 
 //
 // Define the calling convention for Windows targets.
@@ -1013,6 +1014,7 @@ MlasComputeSoftmax(
     size_t N,
     size_t D,
     bool LogSoftmax,
+    bool SmoothSoftmax,
     MLAS_THREADPOOL* ThreadPool
     );
 
@@ -1022,19 +1024,6 @@ MlasComputeTanh(
     const float* Input,
     float* Output,
     size_t N
-    );
-
-//
-// Half-precision floating-point routines.
-//
-
-extern "C"
-void
-MLASCALL
-MlasConvertHalfToFloatBuffer(
-    const unsigned short* Source,
-    float* Destination,
-    size_t Count
     );
 
 //
@@ -1222,6 +1211,26 @@ MlasQuantizeLinear(
     OutputType ZeroPoint
     );
 
+void
+MLASCALL
+MlasQuantizeLinearU4(
+    const float* Input,
+    uint8_t* Output,
+    size_t N,
+    float Scale,
+    int8_t ZeroPoint
+    );
+
+void
+MLASCALL
+MlasQuantizeLinearS4(
+    const float* Input,
+    uint8_t* Output,
+    size_t N,
+    float Scale,
+    int8_t ZeroPoint
+    );
+
 /**
  * @brief Requantize a block of the intermediate buffer to the output buffer,
  *        optionally adding the supplied bias
@@ -1405,6 +1414,149 @@ MlasQLinearMul(
 using MLAS_FP16 = onnxruntime::MLFloat16;
 
 constexpr size_t FP16_SIZE = sizeof(uint16_t);
+
+//
+// Half-precision floating-point routines.
+//
+
+void
+MLASCALL
+MlasConvertHalfToFloatBuffer(
+    const MLAS_FP16* Source,
+    float* Destination,
+    size_t Count
+);
+
+void
+MLASCALL
+MlasConvertFloatToHalfBuffer(
+const float* Source,
+MLAS_FP16* Destination,
+size_t Count
+);
+
+/**
+ * @brief rotary embedding for one hidden state vector
+ *
+ * @tparam T: data type of input, sin, cos and output. Currently only float32/16 are supported.
+ * @param input:  input tensor, of shape [dim]
+ * @param sin:   sin tensor, of shape [dim/2]
+ * @param cos:   cos tensor, of shape [dim/2]
+ * @param dim:   dimension of rotary embedding
+ * @param interleaved:  whether the real part and imaginary parts are interleaved
+ * @param output:  output tensor, of shape [dim]
+ */
+template <typename T>
+void
+MLASCALL
+MlasRotaryEmbedOneRow(
+    const T* input,
+    const T* sin,
+    const T* cos,
+    size_t dim,
+    bool interleaved,
+    T* output
+);
+
+/**
+ * @brief Supply matrices data information to half precision gemm functions
+ */
+struct MLAS_HGEMM_DATA_PARAMS {
+    const MLAS_FP16* A; /**< Supplies the address of matrix A */
+    size_t lda;         /**< Supplies the first dimension of matrix A. */
+    const MLAS_FP16* B; /**< Supplies the address of matrix B */
+    size_t ldb;         /**< Supplies the first dimension of matrix B. */
+    MLAS_FP16* C;       /**< Supplies the address of matrix C */
+    size_t ldc;         /**< Supplies the first dimension of matrix C. */
+    uint16_t alpha;     /**< Supplies the scalar alpha multiplier (see GEMM definition). FP16 encoding. */
+    uint16_t beta;      /**< Supplies the scalar beta multiplier (see GEMM definition). FP16 encoding. */
+};
+
+/**
+ * @brief Check whether current CPU supports half precision gemm.
+ */
+bool
+MLASCALL
+MlasHGemmSupported(
+    CBLAS_TRANSPOSE TransA,
+    CBLAS_TRANSPOSE TransB
+    );
+
+/**
+ * @brief  Batched half precision matrix/matrix multiply operation (HGEMM)
+ *
+ * @param TransA     Supplies the transpose operation for matrix A.
+ * @param TransB     Supplies the transpose operation for matrix B.
+ * @param M          Supplies the number of rows of matrix A and matrix C.
+ * @param N          Supplies the number of columns of matrix B and matrix C.
+ * @param K          Supplies the number of columns of matrix A and the number of rows of matrix B.
+ * @param Data       A array of matrices data parameters
+ * @param BatchSize  Supplies number of multiplications in this batch
+ * @param ThreadPool Supplies the thread pool object to use, else nullptr if the
+                     base library threading support should be used.
+ */
+void
+MLASCALL
+MlasGemmBatch(
+    CBLAS_TRANSPOSE TransA,
+    CBLAS_TRANSPOSE TransB,
+    size_t M,
+    size_t N,
+    size_t K,
+    const MLAS_HGEMM_DATA_PARAMS* Data,
+    size_t BatchSize,
+    MLAS_THREADPOOL* ThreadPool
+    );
+
+/**
+ * @brief  half precision matrix/matrix multiply operation (HGEMM)
+ *         C = alpha * op(A) * op(B) + beta * C
+ *
+ * @param TransA  Supplies the transpose operation for matrix A. Currently only support CblasNoTrans.
+ * @param TransB  Supplies the transpose operation for matrix B. Currently only support CblasTrans.
+ * @param M       Supplies the number of rows of matrix A and matrix C.
+ * @param N       Supplies the number of columns of matrix B and matrix C.
+ * @param K       Supplies the number of columns of matrix A and the number of rows of matrix B.
+ * @param A       Supplies the address of matrix A
+ * @param lda     Supplies the first dimension of matrix A.
+ * @param B       Supplies the address of matrix B
+ * @param ldb     Supplies the first dimension of matrix B.
+ * @param C       Supplies the address of matrix C
+ * @param ldc     Supplies the first dimension of matrix C.
+ * @param alpha   Supplies the scalar alpha multiplier (see GEMM definition)
+ * @param beta    Supplies the scalar beta multiplier (see GEMM definition)
+ * @param ThreadPool Supplies the thread pool object to use, else nullptr if the base library threading support
+ *                   should be used.
+ */
+inline
+void
+MlasGemm(
+    CBLAS_TRANSPOSE TransA,
+    CBLAS_TRANSPOSE TransB,
+    size_t M,
+    size_t N,
+    size_t K,
+    const MLAS_FP16* A,
+    size_t lda,
+    const MLAS_FP16* B,
+    size_t ldb,
+    MLAS_FP16* C,
+    size_t ldc,
+    uint16_t alpha,
+    uint16_t beta,
+    MLAS_THREADPOOL* ThreadPool
+) {
+    MLAS_HGEMM_DATA_PARAMS Data;
+    Data.A = A;
+    Data.lda = lda;
+    Data.B = B;
+    Data.ldb = ldb;
+    Data.C = C;
+    Data.ldc = ldc;
+    Data.alpha = alpha;
+    Data.beta = beta;
+    MlasGemmBatch(TransA, TransB, M, N, K, &Data, 1, ThreadPool);
+}
 
 /**
  * @brief Whether current CPU supports FP16 acceleration.
@@ -1614,10 +1766,124 @@ MlasHalfGemmConvertPackB(
     void* PackedB
     );
 
+#if defined(__aarch64__) && defined(__linux__)
+/**
+ * @brief Whether current CPU supports Bfloat16(bf16) acceleration.
+ */
+bool MLASCALL
+MlasBf16AccelerationSupported();
+
+/**
+ * @brief Interface for bf16 gemm post processors.
+ *
+ * Example implementation of this interface includes activations,
+ * conversion from single precision to precision, etc.
+ *
+ * SBGEMM is computed tile by tile. When a tile of result matrix
+ * is produced, the method Process() is called to process this tile.
+ * Parameters of this method describe the location and shape of the
+ * tile.
+ */
+class MLAS_SBGEMM_POSTPROCESSOR
+{
+   public:
+    virtual void Process(float*, /**< the address of matrix to process */
+                         size_t, /**< the start row index of matrix */
+                         size_t, /**< the start col index of matrix */
+                         size_t, /**< the element count per row to process */
+                         size_t, /**< the element count per col to process */
+                         size_t  /**< the leading dimension of matrix */
+    ) const = 0;
+
+    virtual ~MLAS_SBGEMM_POSTPROCESSOR() {}
+};
+
+/**
+ * @brief bfloat16 precision activation functions, with optional sum tensor.
+ * Supplied sum tensor must be the same layout as the GEMM output tensor.
+ * And the supplied sum tensor will be added to the tensor before activation.
+ */
+class MLAS_SBGEMM_ACTIVATION_PROCESSOR : public MLAS_SBGEMM_POSTPROCESSOR
+{
+   public:
+    MLAS_SBGEMM_ACTIVATION_PROCESSOR(const MLAS_ACTIVATION& Activation, const float* SumBuf = nullptr)
+        : Activation_(Activation), SumBuf_(SumBuf)
+    {
+    }
+
+    void Process(float* C, size_t StartM, size_t StartN, size_t CountM, size_t CountN, size_t ldc)
+        const override;
+
+   private:
+    const MLAS_ACTIVATION& Activation_;
+    const float* SumBuf_;
+};
+
+/**
+ * @brief Data parameters for bfloat16 precision GEMM routine
+ *        All except C are [in] parameters
+ */
+struct MLAS_SBGEMM_DATA_PARAMS {
+    const void* A = nullptr;     /**< address of A */
+    const void* B = nullptr;     /**< address of B */
+    const float* Bias = nullptr; /**< address of Bias, vector size N */
+    float* C = nullptr;          /**< address of result matrix */
+    size_t lda = 0;              /**< leading dimension of A */
+    size_t ldb = 0;              /**< leading dimension of B, 0 when B is pre-packed*/
+    size_t ldc = 0;              /**< leading dimension of C*/
+    const MLAS_SBGEMM_POSTPROCESSOR* OutputProcessor = nullptr;
+    bool AIsfp32 = false; /**< matrix A is fp32, needs to be converted to bf16*/
+    bool BIsfp32 = false; /**< matrix B is fp32, needs to be converted to bf16*/
+};
+
+/**
+ * @brief Bfloat16 precision Batched GEMM:  C = A * B + Bias
+ *        Either B can be either fp32 or bf16
+ *
+ * Note:  We only support uniform batching, so shapes and types of the
+ *        input must be same across all parameter blocks.
+ *
+ * @param[in]  M       row size of matrix A and C
+ * @param[in]  N       column size of matrix B and C
+ * @param[in]  K       column size of matrix A and row size of matrix B
+ * @param[in]  BatchN  number of batches
+ * @param[inout]  DataParams  An array (size BatchN) of parameter blocks
+ * @param[in]  ThreadPool
+ * @return
+ */
+void MLASCALL
+MlasSBGemmBatch(const size_t M, const size_t N, const size_t K, const size_t BatchN, const MLAS_SBGEMM_DATA_PARAMS* DataParams, MLAS_THREADPOOL* ThreadPool = nullptr);
+
+/**
+ * @brief For bfloat16 precision GEMM, returns size of the
+ *        packing buffer needed for right hand side
+ * @param[in] N   Number of columns
+ * @param[in] K   Number of rows
+ * @return  size of the packing buffer,
+ *          0 if operation not supported
+ */
+size_t MLASCALL
+MlasSBGemmPackBSize(size_t N, size_t K);
+
+/**
+ * @brief For bfloat16 precision GEMM, convert the float matrix B
+ *        to blfoat16 precision and pack it into a packing buffer
+ *
+ * @param[in]  N        Number of columns
+ * @param[in]  K        Number of rows
+ * @param[in]  B        Address of matrix B
+ * @param[in]  ldb      leading dimension of input matrix B
+ * @param[out] PackedB  Address of the packed matrix
+ */
+void MLASCALL
+MlasSBGemmConvertPackB(size_t N, size_t K, const float* B, size_t ldb, void* PackedB);
+#endif
+
 /**
  * @brief Indirect Depthwise convolution for fp16
  * @param Input         Supplies the indirect buffer for NHWC input
  * @param Filter        Supplies the address for filter tensor
+ * @param Bias          Supplies the address for 1D bias tensor B, has size of M
  * @param Output        Supplies the address for the result tensor
  * @param Channels      # of input channels
  * @param OutputCount   # of output pixels
@@ -1629,6 +1895,7 @@ MLASCALL
 MlasConvDepthwise(
     const MLAS_FP16* const* Input,
     const MLAS_FP16* Filter,
+    const MLAS_FP16* Bias,
     MLAS_FP16* Output,
     size_t Channels,
     size_t OutputCount,
@@ -1651,6 +1918,7 @@ MlasTranspose(
         reinterpret_cast<uint16_t*>(Output),
         M, N);
 }
+
 
 #ifdef MLAS_F16VEC_INTRINSICS_SUPPORTED
 /**
@@ -1692,3 +1960,35 @@ MlasNhwcAvgPool(
     );
 
 #endif
+
+struct MlasFlashAttentionThreadedArgs {
+    int batch_size;
+    int num_heads;
+    int q_sequence_length;
+    int kv_sequence_length;
+    int qk_head_size;
+    int v_head_size;
+    int q_block_size;
+    int kv_block_size;
+    float scale;
+    int thread_count;
+    float* buffer;
+    size_t buffer_size_per_thread;
+    const float* query;
+    const float* key;
+    const float* value;
+    float* output;
+};
+
+/**
+ * @brief Per-thread worker function for fp32 Flash Attention
+ * @param thread_id    Thread index
+ * @param args         Arguments
+ * @return
+*/
+void
+MLASCALL
+MlasFlashAttention(
+    MlasFlashAttentionThreadedArgs* args,
+    MLAS_THREADPOOL* ThreadPool
+);

@@ -1,15 +1,22 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
+#pragma once
 
-#include "QnnTypes.h"
-#include "core/session/onnxruntime_cxx_api.h"
-
+#include <algorithm>
 #include <functional>
 #include <numeric>
-#include <vector>
 #include <string>
+#include <string_view>
+#include <type_traits>
+#include <utility>
+#include <vector>
 
-#include "core/util/qmath.h"
+#include <gsl/gsl>
+
+#include "QnnInterface.h"
+#include "QnnTypes.h"
+
+#include "core/providers/qnn/ort_api.h"
 
 namespace onnxruntime {
 namespace qnn {
@@ -20,6 +27,12 @@ size_t GetElementSizeByType(const Qnn_DataType_t& data_type);
 
 size_t GetElementSizeByType(ONNXTensorElementDataType elem_type);
 
+size_t GetElementSizeByType(ONNX_NAMESPACE::TensorProto_DataType onnx_type);
+
+size_t GetQnnTensorDataSizeInBytes(gsl::span<const uint32_t> shape, Qnn_DataType_t element_data_type);
+
+bool QnnTensorHasDynamicShape(const Qnn_Tensor_t& tensor);
+
 // TODO: make these work with Wrappers?
 std::ostream& operator<<(std::ostream& out, const Qnn_Param_t& qnn_param);
 std::ostream& operator<<(std::ostream& out, const Qnn_Tensor_t& tensor);
@@ -28,13 +41,32 @@ std::ostream& operator<<(std::ostream& out, const QnnOpConfigWrapper& op_conf_wr
 Status GetQnnDataType(const bool is_quantized_tensor, const ONNX_NAMESPACE::TypeProto* type_proto,
                       Qnn_DataType_t& tensor_data_type);
 
+const std::string& GetNodeName(const NodeUnit& node_unit);
+
 bool OnnxDataTypeToQnnDataType(const int32_t data_type, Qnn_DataType_t& qnn_data_type, bool is_quantized = false);
 
-inline void InitializeQuantizeParam(Qnn_QuantizeParams_t& quantize_param, bool is_quantized_tensor, float scale = 0.0f, int32_t offset = 0) {
-  quantize_param.encodingDefinition = is_quantized_tensor ? QNN_DEFINITION_DEFINED : QNN_DEFINITION_UNDEFINED;
-  quantize_param.quantizationEncoding = is_quantized_tensor ? QNN_QUANTIZATION_ENCODING_SCALE_OFFSET : QNN_QUANTIZATION_ENCODING_UNDEFINED;
-  quantize_param.scaleOffsetEncoding.scale = scale;
-  quantize_param.scaleOffsetEncoding.offset = offset;
+inline Status GetOnnxTensorElemDataType(const NodeArg& node_arg, /*out*/ int32_t& onnx_data_type) {
+  auto type_proto = node_arg.TypeAsProto();
+  ORT_RETURN_IF_NOT(type_proto != nullptr && type_proto->has_tensor_type() && type_proto->tensor_type().has_elem_type(),
+                    "NodeArg must have a tensor TypeProto");
+  onnx_data_type = type_proto->tensor_type().elem_type();
+  return Status::OK();
+}
+
+template <typename IntType>
+static Status InvertPerm(gsl::span<const IntType> perm, /*out*/ gsl::span<IntType> perm_inv) {
+  static_assert(std::is_integral<IntType>::value, "permutation arrays must contain integer elements");
+
+  size_t rank = perm.size();
+  ORT_RETURN_IF_NOT(perm_inv.size() == rank, "perm.size() != perm_inv.size()");
+
+  for (size_t i = 0; i < rank; ++i) {
+    size_t j = static_cast<size_t>(perm[i]);
+    ORT_RETURN_IF_NOT(j < rank, "perm element out of range [0, rank - 1]");
+    perm_inv[j] = static_cast<IntType>(i);
+  }
+
+  return Status::OK();
 }
 
 // Utility function that checks if an array of strings contains a specific string.
@@ -53,7 +85,30 @@ static bool ArrayHasString(const std::array<std::string_view, N>& strings, std::
 std::pair<float, float> CheckMinMax(float rmin, float rmax);
 
 template <typename T>
-Status GetQminQmax(const Qnn_DataType_t qnn_data_type, T& qmin, T& qmax);
+Status GetQminQmax(const Qnn_DataType_t qnn_data_type,
+                   T& qmin,
+                   T& qmax,
+                   bool symmetric = false) {
+  if (qnn_data_type == QNN_DATATYPE_SFIXED_POINT_8) {
+    qmin = static_cast<T>(std::numeric_limits<int8_t>::min() + static_cast<int8_t>(symmetric));
+    qmax = static_cast<T>(std::numeric_limits<int8_t>::max());
+  } else if (qnn_data_type == QNN_DATATYPE_UFIXED_POINT_8) {
+    qmin = static_cast<T>(std::numeric_limits<uint8_t>::min());
+    qmax = static_cast<T>(std::numeric_limits<uint8_t>::max());
+  } else if (qnn_data_type == QNN_DATATYPE_SFIXED_POINT_16) {
+    qmin = static_cast<T>(std::numeric_limits<int16_t>::min() + static_cast<int16_t>(symmetric));
+    qmax = static_cast<T>(std::numeric_limits<int16_t>::max());
+  } else if (qnn_data_type == QNN_DATATYPE_UFIXED_POINT_16) {
+    qmin = static_cast<T>(std::numeric_limits<uint16_t>::min());
+    qmax = static_cast<T>(std::numeric_limits<uint16_t>::max());
+  } else if (qnn_data_type == QNN_DATATYPE_SFIXED_POINT_32) {
+    qmin = static_cast<T>(std::numeric_limits<int32_t>::min() + static_cast<int32_t>(symmetric));
+    qmax = static_cast<T>(std::numeric_limits<int32_t>::max());
+  } else {
+    ORT_RETURN_IF(true, "Qnn Data Type: %d not supported yet.", qnn_data_type);
+  }
+  return Status::OK();
+}
 
 template <typename T>
 inline T Saturate(const T qmax,
@@ -72,15 +127,122 @@ Status GetQuantParams(float rmin,
                       float rmax,
                       const Qnn_DataType_t qnn_data_type,
                       float& scale,
-                      int& zero_point);
+                      int32_t& zero_point,
+                      bool symmetric = false);
 
 double Dequantize(int32_t offset, float scale, const double quant_value);
 
 Status Quantize(const double double_value,
                 const float scale,
-                const int zero_point,
+                const int32_t zero_point,
                 const Qnn_DataType_t qnn_data_type,
                 int& quant_value);
+
+size_t ShapeSizeCalc(gsl::span<const uint32_t> shape, size_t start, size_t end);
+
+// Computes the quantization parameters (scales and offsets) for the given data.
+// Supports both per-tensor and per-channel quantization. Must provide an axis argument
+// for per-channel quantization.
+// The offsets use the QNN convention where offset = -zero_point.
+Status GetDataQuantParams(gsl::span<const float> data, gsl::span<const uint32_t> shape,
+                          /*out*/ gsl::span<float> scales, /*out*/ gsl::span<int32_t> offsets,
+                          Qnn_DataType_t data_type, bool symmetric = false,
+                          std::optional<int64_t> axis = std::nullopt);
+
+// Quantizes the given float data using the provided quantization parameters (scales and offsets).
+// Supports both per-tensor and per-channel quantization. Must provide an axis argument
+// for per-channel quantization.
+// The provided offsets must use the QNN convention where offset = -zero_point.
+Status QuantizeData(gsl::span<const float> data, gsl::span<const uint32_t> shape,
+                    gsl::span<const float> scales, gsl::span<const int32_t> offsets,
+                    /*out*/ gsl::span<uint8_t> quant_bytes, Qnn_DataType_t data_type,
+                    std::optional<int64_t> axis = std::nullopt);
+
+// Quantizes (per-tensor) the given float data using the provided scale and offset.
+// The provided offset must use the QNN convention where offset = -zero_point.
+template <typename QuantType>
+inline Status QuantizeData(gsl::span<const float> data, float scale, int32_t offset,
+                           /*out*/ gsl::span<uint8_t> quant_bytes) {
+  const size_t num_elems = data.size();
+  const size_t expected_output_bytes = sizeof(QuantType) * num_elems;
+  ORT_RETURN_IF_NOT(expected_output_bytes == quant_bytes.size(),
+                    "Output buffer is not large enough to hold quantized bytes.");
+  const double clip_min = static_cast<double>(std::numeric_limits<QuantType>::lowest());
+  const double clip_max = static_cast<double>(std::numeric_limits<QuantType>::max());
+
+  QuantType* output = reinterpret_cast<QuantType*>(quant_bytes.data());
+  for (size_t i = 0; i < num_elems; ++i) {
+    const double scale_dbl = static_cast<double>(scale);
+    const double offset_dbl = static_cast<double>(offset);
+    double float_val = std::nearbyint(static_cast<double>(data[i]) / scale_dbl) - offset_dbl;
+    float_val = std::max(float_val, clip_min);
+    float_val = std::min(float_val, clip_max);
+    output[i] = static_cast<QuantType>(float_val);
+  }
+  return Status::OK();
+}
+
+// Re-writes a buffer of packed 4-bit elements to a buffer of unpacked 8-bit elements.
+// QNN requires that 4-bit weights are unpacked to 8-bit.
+template <bool Signed>
+Status UnpackInt4ToInt8(size_t num_int4_elems, std::vector<uint8_t>& data_bytes) {
+  if constexpr (Signed) {  // INT4
+    std::vector<uint8_t> packed_int4_bytes = std::move(data_bytes);
+    data_bytes = std::vector<uint8_t>(num_int4_elems);
+
+    auto dst = gsl::make_span(reinterpret_cast<int8_t*>(data_bytes.data()), data_bytes.size());
+    auto src = gsl::make_span(reinterpret_cast<const Int4x2*>(packed_int4_bytes.data()), packed_int4_bytes.size());
+    ORT_RETURN_IF_NOT(Int4x2::Unpack(dst, src), "Failed to unpack Tensor<Int4x2> for QNN");
+
+    // NOTE: Masking off top 4 bits to workaround a QNN INT4 accuracy bug.
+    // Docs explicitly state that masking off top 4 bits should not be required, but we have to do it.
+    for (size_t i = 0; i < dst.size(); i++) {
+      dst[i] &= 0x0F;  // -3 (0b1111_1101) becomes 13 (0b0000_1101)
+    }
+  } else {  // UINT4
+    std::vector<uint8_t> packed_uint4_bytes = std::move(data_bytes);
+    data_bytes = std::vector<uint8_t>(num_int4_elems);
+
+    auto dst = gsl::make_span(reinterpret_cast<uint8_t*>(data_bytes.data()), data_bytes.size());
+    auto src = gsl::make_span(reinterpret_cast<const UInt4x2*>(packed_uint4_bytes.data()), packed_uint4_bytes.size());
+    ORT_RETURN_IF_NOT(UInt4x2::Unpack(dst, src), "Failed to unpack Tensor<UInt4x2> for QNN");
+  }
+
+  return Status::OK();
+}
+
+template <typename T>
+std::vector<T> GetInitializerShape(const ONNX_NAMESPACE::TensorProto& tensor_proto) {
+  const auto& dims = tensor_proto.dims();
+  std::vector<T> tensor_shape_vec(static_cast<size_t>(dims.size()));
+  for (int i = 0; i < dims.size(); ++i) {
+    tensor_shape_vec[i] = static_cast<T>(dims[i]);
+  }
+
+  return tensor_shape_vec;
+}
+
+template <typename T, typename P>
+Status PermuteShape(gsl::span<const T> input_shape, gsl::span<const P> perm, gsl::span<T> output_shape) {
+  const size_t rank = input_shape.size();
+  ORT_RETURN_IF_NOT(rank == perm.size() && rank == output_shape.size(),
+                    "PermuteShape(): expect all arguments to have the same rank.");
+
+  for (size_t i = 0; i < rank; ++i) {
+    size_t p = static_cast<size_t>(perm[i]);
+    output_shape[i] = input_shape[p];
+  }
+
+  return Status::OK();
+}
+
+// Gets error message associated with QNN error handle value.
+std::string_view GetQnnErrorMessage(const QNN_INTERFACE_VER_TYPE& qnn_interface,
+                                    Qnn_ErrorHandle_t qnn_error_handle);
+
+// Gets verbose error message associated with QNN error handle value.
+std::string GetVerboseQnnErrorMessage(const QNN_INTERFACE_VER_TYPE& qnn_interface,
+                                      Qnn_ErrorHandle_t qnn_error_handle);
 
 }  // namespace utils
 }  // namespace qnn

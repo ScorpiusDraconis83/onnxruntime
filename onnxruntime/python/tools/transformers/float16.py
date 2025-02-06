@@ -16,7 +16,6 @@ import itertools
 import logging
 import os
 import tempfile
-from typing import Dict
 
 import numpy as np
 import onnx
@@ -132,6 +131,7 @@ DEFAULT_OP_BLOCK_LIST = [
     "Scaler",
     "TreeEnsembleClassifier",
     "TreeEnsembleRegressor",
+    "TreeEnsemble",
     "ZipMap",
     "NonMaxSuppression",
     "TopK",
@@ -174,6 +174,7 @@ def convert_float_to_float16(
     node_block_list=None,
     force_fp16_initializers=False,
     force_fp16_inputs=None,
+    use_bfloat16_as_blocked_nodes_dtype=False,
 ):
     """Convert tensor float type in the input ONNX model to tensor float16.
 
@@ -199,9 +200,9 @@ def convert_float_to_float16(
     Returns:
         ModelProto: converted model.
     """
-    assert (
-        min_positive_val >= 5.96e-08
-    ), "invalid min_positive_val. smallest positive float16 value: subnormal 5.96e-08, and normalized 6.104e-05"
+    assert min_positive_val >= 5.96e-08, (
+        "invalid min_positive_val. smallest positive float16 value: subnormal 5.96e-08, and normalized 6.104e-05"
+    )
     assert max_finite_val <= float(np.finfo(np.float16).max), "invalid max_finite_val. largest float16 value: 65504"
 
     force_fp16_inputs_dict = {} if force_fp16_inputs is None else force_fp16_inputs
@@ -302,7 +303,7 @@ def convert_float_to_float16(
             value_info_list.append(new_value_info)
             io_casts.add(node_name)
 
-    fp32_initializers: Dict[str, InitializerTracker] = {}
+    fp32_initializers: dict[str, InitializerTracker] = {}
     while queue:
         next_level = []
         for q in queue:
@@ -410,9 +411,7 @@ def convert_float_to_float16(
             value_info_list.append(make_value_info_from_tensor(value.initializer))
             if value.fp32_nodes and not force_fp16_initializers:
                 logger.info(
-                    "initializer is used by both fp32 and fp16 nodes. Consider add these nodes to block list:{}".format(
-                        value.fp16_nodes
-                    )
+                    f"initializer is used by both fp32 and fp16 nodes. Consider add these nodes to block list:{value.fp16_nodes}"
                 )
 
     # Some operators have data type fixed as float for some input. Add a float16 to float cast for those inputs.
@@ -436,6 +435,7 @@ def convert_float_to_float16(
                     node.input[i] = output_name
                     break
 
+    accuracy_type = TensorProto.BFLOAT16 if use_bfloat16_as_blocked_nodes_dtype else TensorProto.FLOAT
     # process the nodes in block list that doesn't support tensor(float16)
     for node in node_list:
         # if input's name is in the value_info_list meaning input is tensor(float16) type,
@@ -450,10 +450,10 @@ def convert_float_to_float16(
                     new_value_info.CopyFrom(value_info)
                     output_name = node.name + "_input_cast_" + str(i)
                     new_value_info.name = output_name
-                    new_value_info.type.tensor_type.elem_type = TensorProto.FLOAT
+                    new_value_info.type.tensor_type.elem_type = accuracy_type
                     # add Cast node (from tensor(float16) to tensor(float) before current node
                     node_name = node.name + "_input_cast" + str(i)
-                    new_node = [helper.make_node("Cast", [input_name], [output_name], to=1, name=node_name)]
+                    new_node = [helper.make_node("Cast", [input_name], [output_name], to=accuracy_type, name=node_name)]
                     model.graph.node.extend(new_node)
                     # change current node's input name
                     node.input[i] = output_name
@@ -469,7 +469,7 @@ def convert_float_to_float16(
                     new_value_info.CopyFrom(value_info)
                     input_name = node.name + "_output_cast_" + str(i)
                     new_value_info.name = input_name
-                    new_value_info.type.tensor_type.elem_type = TensorProto.FLOAT
+                    new_value_info.type.tensor_type.elem_type = accuracy_type
                     # add Cast node (from tensor(float) to tensor(float16) after current node
                     node_name = node.name + "_output_cast" + str(i)
                     new_node = [helper.make_node("Cast", [input_name], [output], to=10, name=node_name)]

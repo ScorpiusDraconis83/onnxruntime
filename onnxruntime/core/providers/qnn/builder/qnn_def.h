@@ -9,8 +9,8 @@
 #include <memory>
 #include <climits>
 #include <type_traits>
-#include "core/graph/basic_types.h"
-#include "core/common/common.h"
+#include "core/providers/qnn/ort_api.h"
+#include "core/providers/qnn/builder/qnn_quant_params_wrapper.h"
 
 namespace onnxruntime {
 namespace qnn {
@@ -46,6 +46,7 @@ enum class HtpPerformanceMode : uint8_t {
   kHtpHighPowerSaver,
   kHtpLowBalanced,
   kHtpBalanced,
+  kHtpExtremePowerSaver,
 };
 
 enum class ContextPriority : uint8_t {
@@ -103,6 +104,7 @@ void SetQnnTensorClientBuf(Qnn_Tensor_t& qnn_tensor, const std::vector<uint32_t>
 void SetQnnTensorClientBuf(Qnn_Tensor_t& qnn_tensor, void* buf_data, uint32_t buf_size);
 void SetQnnTensorClientBufSize(Qnn_Tensor_t& qnn_tensor, uint32_t client_buf_size);
 void SetQnnTensorClientBufData(Qnn_Tensor_t& qnn_tensor, void* client_buf_data);
+void SetQnnTensorMemHandle(Qnn_Tensor_t& qnn_tensor, Qnn_MemHandle_t mem_handle);
 void SetQnnTensorQParams(Qnn_Tensor_t& qnn_tensor, const Qnn_QuantizeParams_t& quantize_params);
 bool CreateTensorInQnnGraph(const QNN_INTERFACE_VER_TYPE& qnn_interface,
                             const Qnn_GraphHandle_t& graph,
@@ -121,7 +123,9 @@ Qnn_TensorMemType_t GetQnnTensorMemType(const Qnn_Tensor_t& qnn_tensor);
 uint32_t GetQnnTensorRank(const Qnn_Tensor_t& qnn_tensor);
 uint32_t* GetQnnTensorDims(const Qnn_Tensor_t& qnn_tensor);
 const Qnn_ClientBuffer_t& GetQnnTensorClientBuf(const Qnn_Tensor_t& qnn_tensor);
+Qnn_MemHandle_t GetQnnTensorMemHandle(const Qnn_Tensor_t& qnn_tensor);
 const Qnn_QuantizeParams_t& GetQnnTensorQParams(const Qnn_Tensor_t& qnn_tensor);
+uint8_t* GetQnnTensorIsDynamicDimensions(const Qnn_Tensor_t& qnn_tensor);
 
 /**
  * Compares two sets of quantization parameters. Sets the parameters `scale_diff` and `offset_diff`
@@ -143,12 +147,13 @@ class QnnTensorWrapper {
   QnnTensorWrapper(const std::string& name,
                    Qnn_TensorType_t tensor_type,
                    Qnn_DataType_t data_type,
-                   const Qnn_QuantizeParams_t& quantize_params,
+                   QnnQuantParamsWrapper&& quantize_params,
                    std::vector<uint32_t>&& shape,
                    std::vector<uint8_t>&& client_buf = {},
                    Qnn_TensorMemType_t mem_type = QNN_TENSORMEMTYPE_RAW) : tensor_name_(name),
                                                                            dimensions_(std::move(shape)),
-                                                                           client_buf_(std::move(client_buf)) {
+                                                                           client_buf_(std::move(client_buf)),
+                                                                           quant_params_(quantize_params) {
     SetQnnTensorType(qnn_tensor_, tensor_type);
     SetQnnTensorName(qnn_tensor_, tensor_name_.c_str());
     SetQnnTensorDataType(qnn_tensor_, data_type);
@@ -162,31 +167,36 @@ class QnnTensorWrapper {
       ORT_THROW("mem_type not supported for now.");
     }
 
-    SetQnnTensorQParams(qnn_tensor_, quantize_params);
+    SetQnnTensorQParams(qnn_tensor_, quant_params_.Get());
   }
 
-  QnnTensorWrapper(const Qnn_Tensor_t& qnn_tensor) : tensor_name_(GetQnnTensorName(qnn_tensor)),
-                                                     client_buf_{} {
+  // Initialize from a raw Qnn_Tensor_t. This method is currently used for graph inputs/outputs
+  // when deserializing from cached context object. Possible return errors due to:
+  //   - Unexpected Qnn_TensorType_t: only handle graph inputs/outputs, not static initializers with data buffers.
+  //   - Unexpected quantization encoding.
+  Status Init(const Qnn_Tensor_t& qnn_tensor) {
+    Qnn_TensorType_t tensor_type = GetQnnTensorType(qnn_tensor);
+    ORT_RETURN_IF(tensor_type == QNN_TENSOR_TYPE_STATIC,
+                  "QnnTensorWrapper::Init(const Qnn_Tensor_t&) does not support static initializers");
+
+    tensor_name_ = GetQnnTensorName(qnn_tensor);
+    client_buf_.clear();
+
     qnn_tensor_ = qnn_tensor;
     SetQnnTensorName(qnn_tensor_, tensor_name_.c_str());
 
-    Qnn_QuantizeParams_t quantize_param = QNN_QUANTIZE_PARAMS_INIT;
-    const auto& src_quantize_param = GetQnnTensorQParams(qnn_tensor);
-    // quantization only support SCALE_OFFSET encoding
-    quantize_param.encodingDefinition = src_quantize_param.encodingDefinition;
-    quantize_param.quantizationEncoding = src_quantize_param.quantizationEncoding;
-    quantize_param.scaleOffsetEncoding = src_quantize_param.scaleOffsetEncoding;
-    SetQnnTensorQParams(qnn_tensor_, quantize_param);
+    const Qnn_QuantizeParams_t& src_quantize_param = GetQnnTensorQParams(qnn_tensor);
+    ORT_RETURN_IF_ERROR(quant_params_.Init(src_quantize_param));
+    SetQnnTensorQParams(qnn_tensor_, quant_params_.Get());
 
     uint32_t shape_rank = GetQnnTensorRank(qnn_tensor);
     uint32_t* shape_data = GetQnnTensorDims(qnn_tensor);
     dimensions_.assign(shape_data, shape_data + shape_rank);
     SetQnnTensorDim(qnn_tensor_, dimensions_);
 
-    // This method is only used for graph inputs/outputs when desearilize from cached context
-    // no client buffer should be set
-
     SetQnnTensorMemType(qnn_tensor_, QNN_TENSORMEMTYPE_RAW);
+
+    return Status::OK();
   }
 
   QnnTensorWrapper() = default;
@@ -194,13 +204,15 @@ class QnnTensorWrapper {
   ORT_DISALLOW_COPY_AND_ASSIGNMENT(QnnTensorWrapper);
 
   QnnTensorWrapper(QnnTensorWrapper&& other) noexcept {
-    std::swap(tensor_name_, other.tensor_name_);
-    std::swap(dimensions_, other.dimensions_);
-    std::swap(client_buf_, other.client_buf_);
-    std::swap(qnn_tensor_, other.qnn_tensor_);
-    SetQnnTensorName(qnn_tensor_, tensor_name_.c_str());
-    SetQnnTensorDim(qnn_tensor_, dimensions_);
-    SetQnnTensorClientBuf(qnn_tensor_, client_buf_);
+    SwapOther(std::move(other));
+  }
+
+  QnnTensorWrapper& operator=(QnnTensorWrapper&& other) noexcept {
+    if (this != &other) {
+      SwapOther(std::move(other));
+    }
+
+    return *this;
   }
 
   ~QnnTensorWrapper() = default;
@@ -211,6 +223,14 @@ class QnnTensorWrapper {
 
   Qnn_Tensor_t& GetQnnTensor() {
     return qnn_tensor_;
+  }
+
+  const QnnQuantParamsWrapper& GetQnnQuantParams() const {
+    return quant_params_;
+  }
+
+  QnnQuantParamsWrapper& GetQnnQuantParams() {
+    return quant_params_;
   }
 
   const std::string& GetName() const { return tensor_name_; }
@@ -230,22 +250,23 @@ class QnnTensorWrapper {
   }
 
  private:
-  void CopyQuantizationEncoding(Qnn_QuantizeParams_t& dst, const Qnn_QuantizeParams_t& src) {
-    Qnn_QuantizationEncoding_t encoding = src.quantizationEncoding;
-    if (encoding == QNN_QUANTIZATION_ENCODING_SCALE_OFFSET ||
-        encoding == QNN_QUANTIZATION_ENCODING_UNDEFINED) {
-      dst = src;
-    } else if (encoding == QNN_QUANTIZATION_ENCODING_AXIS_SCALE_OFFSET) {
-      ORT_THROW("Axis scale offset quantization parameter is not supported.");
-    } else {
-      ORT_THROW("quantizationEncoding incorrect value.");
-    }
+  void SwapOther(QnnTensorWrapper&& other) noexcept {
+    std::swap(tensor_name_, other.tensor_name_);
+    std::swap(dimensions_, other.dimensions_);
+    std::swap(client_buf_, other.client_buf_);
+    std::swap(quant_params_, other.quant_params_);
+    std::swap(qnn_tensor_, other.qnn_tensor_);
+    SetQnnTensorName(qnn_tensor_, tensor_name_.c_str());
+    SetQnnTensorDim(qnn_tensor_, dimensions_);
+    SetQnnTensorClientBuf(qnn_tensor_, client_buf_);
+    SetQnnTensorQParams(qnn_tensor_, quant_params_.Get());
   }
 
   std::string tensor_name_;
   std::vector<uint32_t> dimensions_;
   std::vector<uint8_t> client_buf_;
   Qnn_Tensor_t qnn_tensor_ = QNN_TENSOR_INIT;
+  QnnQuantParamsWrapper quant_params_;
 };
 
 class QnnParamWrapper {
@@ -446,11 +467,13 @@ class QnnOpProperty {
 
 class GraphInfo {
  public:
-  GraphInfo(const Qnn_GraphHandle_t graph,
+  GraphInfo(Qnn_GraphHandle_t graph,
             const std::string& name,
+            Qnn_ContextHandle_t graph_context,
             std::vector<QnnTensorWrapper>&& input_tensors,
             std::vector<QnnTensorWrapper>&& output_tensors) : graph_name_(name),
                                                               graph_(graph),
+                                                              graph_context_(graph_context),
                                                               input_tensors_(std::move(input_tensors)),
                                                               output_tensors_(std::move(output_tensors)) {
   }
@@ -460,12 +483,15 @@ class GraphInfo {
   const std::string& Name() const { return graph_name_; }
   const std::vector<QnnTensorWrapper>& InputTensors() const { return input_tensors_; }
   const std::vector<QnnTensorWrapper>& OutputTensors() const { return output_tensors_; }
-  const Qnn_GraphHandle_t& Graph() const { return graph_; }
+  Qnn_GraphHandle_t Graph() const { return graph_; }
+  Qnn_ContextHandle_t GraphContext() const { return graph_context_; }
   ORT_DISALLOW_COPY_ASSIGNMENT_AND_MOVE(GraphInfo);
 
  private:
   std::string graph_name_;
   Qnn_GraphHandle_t graph_;
+  // QNN context that holds the QNN graph referenced by `graph_`
+  Qnn_ContextHandle_t graph_context_;
   std::vector<QnnTensorWrapper> input_tensors_;
   std::vector<QnnTensorWrapper> output_tensors_;
 };
@@ -477,6 +503,11 @@ typedef struct GraphConfigInfo {
   const char* graphName;
   const QnnGraph_Config_t** graphConfigs;
 } GraphConfigInfo_t;
+
+static const std::vector<size_t> nchw2hwcn_perm{2, 3, 1, 0};
+static const std::vector<size_t> nchw2hwcn_perm_3d{2, 3, 4, 1, 0};
+static const std::vector<size_t> cnhw2hwcn_perm{2, 3, 0, 1};
+static const std::vector<size_t> cnhw2hwcn_perm_3d{2, 3, 4, 0, 1};
 
 }  // namespace qnn
 }  // namespace onnxruntime

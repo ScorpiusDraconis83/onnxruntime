@@ -237,7 +237,7 @@ def test_data_flatten_and_unflatten(input_output_map, flag: int):
     flatten_schema = input_output_map[2]
 
     def _recursive_compare(real, expected):
-        assert type(real) == type(expected)
+        assert type(real) is type(expected)
         if isinstance(real, str):
             assert real == expected
         elif isinstance(real, abc.Sequence):
@@ -256,9 +256,12 @@ def test_data_flatten_and_unflatten(input_output_map, flag: int):
 
     if flag == 0:
         out, schema = extract_data_and_schema(raw_data)
-        assert all([torch.allclose(o, d) if isinstance(o, torch.Tensor) else o == d for o, d in zip(out, flatten_data)])
+        assert all(
+            torch.allclose(o, d) if isinstance(o, torch.Tensor) else o == d
+            for o, d in zip(out, flatten_data, strict=False)
+        )
         if not isinstance(raw_data, torch.Tensor):
-            assert type(schema) == type(raw_data)
+            assert type(schema) is type(raw_data)
 
         assert str(schema) == str(flatten_schema)
 
@@ -274,10 +277,8 @@ def test_data_flatten_and_unflatten(input_output_map, flag: int):
             assert raw_data == schema
         else:
             assert all(
-                [
-                    torch.allclose(o, d) if isinstance(o, torch.Tensor) else o == d
-                    for o, d in zip(out, flatten_data_constant_as_tensor)
-                ]
+                torch.allclose(o, d) if isinstance(o, torch.Tensor) else o == d
+                for o, d in zip(out, flatten_data_constant_as_tensor, strict=False)
             )
 
     elif flag == 1:

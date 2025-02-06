@@ -17,7 +17,7 @@ Status DecoderQkvToContext(
     const cudaDeviceProp& device_prop,
     Stream* ort_stream,
     cublasHandle_t& cublas,
-    const size_t element_size,
+    const size_t /*element_size*/,
     const int batch_size,
     const int sequence_length,
     const int kv_sequence_length,
@@ -37,7 +37,8 @@ Status DecoderQkvToContext(
     T* workspace_buffer,
     T* output,
     T* new_key_cache,
-    T* new_value_cache) {
+    T* new_value_cache,
+    bool use_tf32) {
   const int max_threads_per_block = device_prop.maxThreadsPerBlock;
   const int BN = batch_size * num_heads;
   const int BHN = BN * head_size;
@@ -128,32 +129,36 @@ Status DecoderQkvToContext(
         kv_sequence_length, sequence_length, head_size,
         &alpha, key_cache, head_size, strideA,
         q, head_size, strideB,
-        &zero, scratch1, kv_sequence_length, temp_matrix_size, BN, device_prop));
+        &zero, scratch1, kv_sequence_length, temp_matrix_size, BN, device_prop, use_tf32));
   } else {
     CUBLAS_RETURN_IF_ERROR(cublasGemmStridedBatchedHelper(
         cublas, CUBLAS_OP_T, CUBLAS_OP_N,
         kv_sequence_length, sequence_length, head_size,
         &alpha, k, head_size, strideA,
         q, head_size, strideB,
-        &zero, scratch1, kv_sequence_length, temp_matrix_size, BN, device_prop));
+        &zero, scratch1, kv_sequence_length, temp_matrix_size, BN, device_prop, use_tf32));
   }
 
   constexpr bool is_unidirectional = false;
-  const T* add_before_softmax = nullptr;
+  const T* attention_bias = nullptr;
+  constexpr bool broadcast_attn_bias_dim_0 = false;
+  constexpr bool broadcast_attn_bias_dim_1 = false;
+
   if (has_key_padding_mask) {
     constexpr int mask_dimension = 2;
     constexpr int max_sequence_length = 0;
     ORT_RETURN_IF_ERROR(ComputeSoftmaxWithRawMask<T>(
         ort_stream, kv_sequence_length, sequence_length, batch_size,
-        num_heads, nullptr, key_padding_mask, add_before_softmax,
-        false /*broadcast rpb*/, scratch1, scratch2, is_unidirectional,
+        num_heads, nullptr, key_padding_mask,
+        attention_bias, broadcast_attn_bias_dim_0, broadcast_attn_bias_dim_1,
+        scratch1, scratch2, is_unidirectional,
         1.0f, mask_dimension, max_sequence_length, false, nullptr,
         mask_filter_value));
   } else {
     ORT_RETURN_IF_ERROR(ComputeSoftmax<T>(
         stream, kv_sequence_length, sequence_length, batch_size, num_heads,
-        add_before_softmax, false /*broadcast rpb*/, scratch1, scratch2,
-        is_unidirectional));
+        attention_bias, broadcast_attn_bias_dim_0, broadcast_attn_bias_dim_1,
+        scratch1, scratch2, is_unidirectional));
   }
 
   // compute P*V (as V*P), and store in scratch3: BxNxSxH
@@ -163,14 +168,14 @@ Status DecoderQkvToContext(
         head_size, sequence_length, kv_sequence_length,
         &one, value_cache, head_size, strideA,
         scratch2, kv_sequence_length, temp_matrix_size,
-        &zero, scratch3, head_size, strideB, BN, device_prop));
+        &zero, scratch3, head_size, strideB, BN, device_prop, use_tf32));
   } else {
     CUBLAS_RETURN_IF_ERROR(cublasGemmStridedBatchedHelper(
         cublas, CUBLAS_OP_N, CUBLAS_OP_N,
         head_size, sequence_length, kv_sequence_length,
         &one, v, head_size, strideA,
         scratch2, kv_sequence_length, temp_matrix_size,
-        &zero, scratch3, head_size, strideB, BN, device_prop));
+        &zero, scratch3, head_size, strideB, BN, device_prop, use_tf32));
   }
 
   // scratch3 is BxNxSxH, transpose to output SxBxNxH
@@ -180,6 +185,7 @@ Status DecoderQkvToContext(
 
 Status LaunchDecoderAttentionKernel(
     const cudaDeviceProp& device_prop,
+    bool use_tf32,
     Stream* stream,
     cublasHandle_t& cublas,
     const size_t element_size,
@@ -228,7 +234,8 @@ Status LaunchDecoderAttentionKernel(
         reinterpret_cast<half*>(workspace_buffer),
         reinterpret_cast<half*>(output),
         reinterpret_cast<half*>(new_key_cache),
-        reinterpret_cast<half*>(new_value_cache));
+        reinterpret_cast<half*>(new_value_cache),
+        use_tf32);
   } else {
     return DecoderQkvToContext(
         device_prop,
@@ -254,7 +261,8 @@ Status LaunchDecoderAttentionKernel(
         reinterpret_cast<float*>(workspace_buffer),
         reinterpret_cast<float*>(output),
         reinterpret_cast<float*>(new_key_cache),
-        reinterpret_cast<float*>(new_value_cache));
+        reinterpret_cast<float*>(new_value_cache),
+        use_tf32);
   }
 }
 

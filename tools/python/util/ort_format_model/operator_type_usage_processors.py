@@ -1,8 +1,8 @@
 # Copyright (c) Microsoft Corporation. All rights reserved.
 # Licensed under the MIT License.
+from __future__ import annotations
 
 import json
-import typing
 from abc import ABC, abstractmethod
 
 import ort_flatbuffers_py.fbs as fbs
@@ -65,9 +65,7 @@ class TypeUsageProcessor(ABC):
     def process_node(self, node: fbs.Node, value_name_to_typeinfo: dict):
         pass
 
-    def is_typed_registration_needed(
-        self, type_in_registration: str, globally_allowed_types: typing.Optional[typing.Set[str]]
-    ):
+    def is_typed_registration_needed(self, type_in_registration: str, globally_allowed_types: set[str] | None):
         """
         Given the string from a kernel registration, determine if the registration is required or not.
         :param type_in_registration: Type string from kernel registration
@@ -92,7 +90,6 @@ class TypeUsageProcessor(ABC):
         Generate a configuration file entry in JSON format with the required types for the operator.
         :return: JSON string with required type information.
         """
-        pass
 
     @abstractmethod
     def from_config_entry(self, entry: str):
@@ -101,7 +98,6 @@ class TypeUsageProcessor(ABC):
         NOTE: Any existing type information should be cleared prior to re-creating from a config file entry.
         :param entry: Configuration file entry
         """
-        pass
 
 
 class DefaultTypeUsageProcessor(TypeUsageProcessor):
@@ -115,8 +111,8 @@ class DefaultTypeUsageProcessor(TypeUsageProcessor):
         optype: str,
         inputs: [int] = [0],  # noqa: B006
         outputs: [int] = [],  # noqa: B006
-        required_input_types: typing.Dict[int, typing.Set[str]] = {},  # noqa: B006
-        required_output_types: typing.Dict[int, typing.Set[str]] = {},  # noqa: B006
+        required_input_types: dict[int, set[str]] = {},  # noqa: B006
+        required_output_types: dict[int, set[str]] = {},  # noqa: B006
     ):
         """
         Create DefaultTypeUsageProcessor. Types for one or more inputs and/or outputs can be tracked by the processor.
@@ -182,17 +178,13 @@ class DefaultTypeUsageProcessor(TypeUsageProcessor):
             # Don't know of any ops where the number of outputs changed across versions, so require a valid length
             if o >= node.OutputsLength():
                 raise RuntimeError(
-                    "Node has {} outputs. Tracker for {} incorrectly configured as it requires {}.".format(
-                        node.OutputsLength(), self.name, o
-                    )
+                    f"Node has {node.OutputsLength()} outputs. Tracker for {self.name} incorrectly configured as it requires {o}."
                 )
 
             type_str = value_name_to_typestr(node.Outputs(o), value_name_to_typeinfo)
             self._output_types[o].add(type_str)
 
-    def is_typed_registration_needed(
-        self, type_in_registration: str, globally_allowed_types: typing.Optional[typing.Set[str]]
-    ):
+    def is_typed_registration_needed(self, type_in_registration: str, globally_allowed_types: set[str] | None):
         if 0 not in self._input_types:
             # currently all standard typed registrations are for input 0.
             # custom registrations can be handled by operator specific processors (e.g. OneHotProcessor below).
@@ -266,9 +258,7 @@ class Input1TypedRegistrationProcessor(DefaultTypeUsageProcessor):
         # init with tracking of input 1 only.
         super().__init__(domain, optype, inputs=[1], outputs=[])
 
-    def is_typed_registration_needed(
-        self, type_in_registration: str, globally_allowed_types: typing.Optional[typing.Set[str]]
-    ):
+    def is_typed_registration_needed(self, type_in_registration: str, globally_allowed_types: set[str] | None):
         return self.is_input_type_enabled(type_in_registration, 1, globally_allowed_types)
 
 
@@ -281,9 +271,7 @@ class Output0TypedRegistrationProcessor(DefaultTypeUsageProcessor):
         # init with tracking of output 0 only.
         super().__init__(domain, optype, inputs=[], outputs=[0])
 
-    def is_typed_registration_needed(
-        self, type_in_registration: str, globally_allowed_types: typing.Optional[typing.Set[str]]
-    ):
+    def is_typed_registration_needed(self, type_in_registration: str, globally_allowed_types: set[str] | None):
         return self.is_output_type_enabled(type_in_registration, 0, globally_allowed_types)
 
 
@@ -305,9 +293,7 @@ class OneHotProcessor(TypeUsageProcessor):
         key = (type0, type2, type1)
         self._triples.add(key)
 
-    def is_typed_registration_needed(
-        self, type_in_registration: str, globally_allowed_types: typing.Optional[typing.Set[str]]
-    ):
+    def is_typed_registration_needed(self, type_in_registration: str, globally_allowed_types: set[str] | None):
         # the OneHot registration involves a concatenation of the 3 types involved
         reg_types = tuple([_reg_type_to_cpp_type(reg_type) for reg_type in _split_reg_types(type_in_registration)])
         if globally_allowed_types is not None:
@@ -514,7 +500,6 @@ class OpTypeImplFilterInterface(ABC):
         :param type_registration_str: Type string from kernel registration
         :return: True is required. False if not.
         """
-        pass
 
     @abstractmethod
     def get_cpp_entries(self):
@@ -522,7 +507,6 @@ class OpTypeImplFilterInterface(ABC):
         Get the C++ code that specifies the operator types to enable.
         :return: List of strings. One line of C++ code per entry.
         """
-        pass
 
 
 class OperatorTypeUsageManager:
@@ -639,14 +623,12 @@ class GloballyAllowedTypesOpTypeImplFilter(OpTypeImplFilterInterface):
 
     _valid_allowed_types = set(FbsTypeInfo.tensordatatype_to_string.values())  # noqa: RUF012
 
-    def __init__(self, globally_allowed_types: typing.Set[str]):
+    def __init__(self, globally_allowed_types: set[str]):
         self._operator_processors = _create_operator_type_usage_processors()
 
         if not globally_allowed_types.issubset(self._valid_allowed_types):
             raise ValueError(
-                "Globally allowed types must all be valid. Invalid types: {}".format(
-                    sorted(globally_allowed_types - self._valid_allowed_types)
-                )
+                f"Globally allowed types must all be valid. Invalid types: {sorted(globally_allowed_types - self._valid_allowed_types)}"
             )
 
         self._globally_allowed_types = globally_allowed_types
