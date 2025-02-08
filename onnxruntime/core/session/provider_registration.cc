@@ -4,6 +4,7 @@
 #include <string>
 
 #include "core/common/common.h"
+#include "core/common/logging/logging.h"
 #include "core/framework/error_code_helper.h"
 #include "core/framework/provider_options.h"
 #include "core/providers/provider_factory_creators.h"
@@ -13,6 +14,7 @@
 #include "core/providers/openvino/openvino_provider_factory_creator.h"
 
 #ifdef _WIN32
+#include <winmeta.h>
 #include "core/platform/tracing.h"
 #endif
 
@@ -75,6 +77,8 @@ ORT_API_STATUS_IMPL(OrtApis::SessionOptionsAppendExecutionProvider,
     TraceLoggingWrite(
         telemetry_provider_handle,
         "ProviderOptionsAppendExecutionProvider",
+        TraceLoggingKeyword(static_cast<uint64_t>(onnxruntime::logging::ORTTraceLoggingKeyword::Session)),
+        TraceLoggingLevel(WINEVENT_LEVEL_INFO),
         TraceLoggingString(provider_name, "ProviderName"),
         TraceLoggingString(config_pair.first.c_str(), "Key"),
         TraceLoggingString(config_pair.second.c_str(), "Value"));
@@ -86,9 +90,13 @@ ORT_API_STATUS_IMPL(OrtApis::SessionOptionsAppendExecutionProvider,
                                  (std::string(provider_name) + " execution provider is not supported in this build. ").c_str());
   };
 
+  for (const auto& config_pair : provider_options) {
+    ORT_THROW_IF_ERROR(options->value.config_options.AddConfigEntry((std::string(provider_name) + ":" + config_pair.first).c_str(), config_pair.second.c_str()));
+  }
+
   if (strcmp(provider_name, "DML") == 0) {
 #if defined(USE_DML)
-    options->provider_factories.push_back(DMLProviderFactoryCreator::CreateFromProviderOptions(provider_options));
+    options->provider_factories.push_back(DMLProviderFactoryCreator::CreateFromProviderOptions(options->value.config_options, provider_options));
 #else
     status = create_not_supported_status();
 #endif
@@ -100,11 +108,10 @@ ORT_API_STATUS_IMPL(OrtApis::SessionOptionsAppendExecutionProvider,
 #endif
   } else if (strcmp(provider_name, "OpenVINO") == 0) {
 #if defined(USE_OPENVINO)
-    options->provider_factories.push_back(OpenVINOProviderFactoryCreator::Create(&provider_options));
+    options->provider_factories.push_back(OpenVINOProviderFactoryCreator::Create(&provider_options, &(options->value)));
 #else
     status = create_not_supported_status();
 #endif
-
   } else if (strcmp(provider_name, "SNPE") == 0) {
 #if defined(USE_SNPE)
     options->provider_factories.push_back(SNPEProviderFactoryCreator::Create(provider_options));
@@ -120,12 +127,14 @@ ORT_API_STATUS_IMPL(OrtApis::SessionOptionsAppendExecutionProvider,
   } else if (strcmp(provider_name, "WEBNN") == 0) {
 #if defined(USE_WEBNN)
     std::string deviceType = options->value.config_options.GetConfigOrDefault("deviceType", "cpu");
-    std::string numThreads = options->value.config_options.GetConfigOrDefault("numThreads", "0");
-    std::string powerPreference = options->value.config_options.GetConfigOrDefault("powerPreference", "default");
     provider_options["deviceType"] = deviceType;
-    provider_options["numThreads"] = numThreads;
-    provider_options["powerPreference"] = powerPreference;
     options->provider_factories.push_back(WebNNProviderFactoryCreator::Create(provider_options));
+#else
+    status = create_not_supported_status();
+#endif
+  } else if (strcmp(provider_name, "WebGPU") == 0) {
+#if defined(USE_WEBGPU)
+    options->provider_factories.push_back(WebGpuProviderFactoryCreator::Create(options->value.config_options));
 #else
     status = create_not_supported_status();
 #endif
@@ -141,20 +150,26 @@ ORT_API_STATUS_IMPL(OrtApis::SessionOptionsAppendExecutionProvider,
     if (options->value.config_options.TryGetConfigEntry("preferredLayout", preferred_layout)) {
       provider_options["preferred_layout"] = preferred_layout;
     }
-    options->provider_factories.push_back(JsProviderFactoryCreator::Create(provider_options));
+    options->provider_factories.push_back(JsProviderFactoryCreator::Create(provider_options, &(options->value)));
 #else
     status = create_not_supported_status();
 #endif
   } else if (strcmp(provider_name, "VitisAI") == 0) {
-#if defined(USE_VITISAI)
-    options->provider_factories.push_back(VitisAIProviderFactoryCreator::Create(provider_options));
+#ifdef USE_VITISAI
+    status = OrtApis::SessionOptionsAppendExecutionProvider_VitisAI(options, provider_options_keys, provider_options_values, num_keys);
+#else
+    status = create_not_supported_status();
+#endif
+  } else if (strcmp(provider_name, "CoreML") == 0) {
+#if defined(USE_COREML)
+    options->provider_factories.push_back(CoreMLProviderFactoryCreator::Create(provider_options));
 #else
     status = create_not_supported_status();
 #endif
   } else {
     ORT_UNUSED_PARAMETER(options);
     status = OrtApis::CreateStatus(ORT_INVALID_ARGUMENT,
-                                   "Unknown provider name. Currently supported values are 'OPENVINO', 'SNPE', 'XNNPACK', 'QNN', 'WEBNN' and 'AZURE'");
+                                   "Unknown provider name. Currently supported values are 'OPENVINO', 'SNPE', 'XNNPACK', 'QNN', 'WEBNN' ,'CoreML', and 'AZURE'");
   }
 
   return status;
@@ -197,15 +212,6 @@ ORT_API_STATUS_IMPL(OrtSessionOptionsAppendExecutionProvider_Nnapi,
   ORT_UNUSED_PARAMETER(options);
   ORT_UNUSED_PARAMETER(nnapi_flags);
   return CreateNotEnabledStatus("NNAPI");
-}
-#endif
-
-#ifndef USE_TVM
-ORT_API_STATUS_IMPL(OrtSessionOptionsAppendExecutionProvider_Tvm,
-                    _In_ OrtSessionOptions* options, _In_ const char* settings) {
-  ORT_UNUSED_PARAMETER(options);
-  ORT_UNUSED_PARAMETER(settings);
-  return CreateNotEnabledStatus("Tvm");
 }
 #endif
 
@@ -304,6 +310,18 @@ ORT_API_STATUS_IMPL(OrtApis::SessionOptionsAppendExecutionProvider_OpenVINO,
                     _In_ OrtSessionOptions* options, _In_ const OrtOpenVINOProviderOptions* provider_options) {
   ORT_UNUSED_PARAMETER(options);
   ORT_UNUSED_PARAMETER(provider_options);
+  return CreateNotEnabledStatus("OpenVINO");
+}
+
+ORT_API_STATUS_IMPL(OrtApis::SessionOptionsAppendExecutionProvider_OpenVINO_V2,
+                    _In_ OrtSessionOptions* options,
+                    _In_reads_(num_keys) const char* const* provider_options_keys,
+                    _In_reads_(num_keys) const char* const* provider_options_values,
+                    _In_ size_t num_keys) {
+  ORT_UNUSED_PARAMETER(options);
+  ORT_UNUSED_PARAMETER(provider_options_keys);
+  ORT_UNUSED_PARAMETER(provider_options_values);
+  ORT_UNUSED_PARAMETER(num_keys);
   return CreateNotEnabledStatus("OpenVINO");
 }
 
@@ -482,5 +500,15 @@ ORT_API_STATUS_IMPL(OrtApis::GetROCMProviderOptionsAsString,
 
 ORT_API(void, OrtApis::ReleaseROCMProviderOptions, _Frees_ptr_opt_ OrtROCMProviderOptions* ptr) {
   ORT_UNUSED_PARAMETER(ptr);
+}
+
+ORT_API_STATUS_IMPL(OrtApis::SessionOptionsAppendExecutionProvider_VitisAI,
+                    _In_ OrtSessionOptions* options, _In_reads_(num_keys) const char* const* provider_options_keys,
+                    _In_reads_(num_keys) const char* const* provider_options_values, _In_ size_t num_keys) {
+  ORT_UNUSED_PARAMETER(options);
+  ORT_UNUSED_PARAMETER(provider_options_keys);
+  ORT_UNUSED_PARAMETER(provider_options_values);
+  ORT_UNUSED_PARAMETER(num_keys);
+  return CreateNotEnabledStatus("VitisAI");
 }
 #endif

@@ -13,7 +13,7 @@ import os
 import random
 import traceback
 import types
-from typing import Callable, List, Optional, Tuple, Union
+from collections.abc import Callable
 
 import numpy as np
 import torch
@@ -63,10 +63,10 @@ def _ortvalue_from_torch_tensor(torch_tensor: torch.Tensor) -> C.OrtValue:
 
 
 def _ortvalues_to_torch_tensor(
-    ortvalues: C.OrtValueVector, device: Optional[torch.device] = None
-) -> Tuple[torch.Tensor, ...]:
+    ortvalues: C.OrtValueVector, device: torch.device | None = None
+) -> tuple[torch.Tensor, ...]:
     if len(ortvalues) == 0:
-        return tuple()
+        return ()
 
     if device is not None and device.type == "ort":
         if not hasattr(C, "to_aten_ort_device_tensor"):
@@ -74,9 +74,9 @@ def _ortvalues_to_torch_tensor(
         return tuple(C.to_aten_ort_device_tensor(ov) for ov in ortvalues)
 
     if not isinstance(ortvalues, C.OrtValueVector):
-        raise TypeError("ortvalues must be an instance of OrtValueVector not %r." % type(ortvalues))
+        raise TypeError(f"ortvalues must be an instance of OrtValueVector not {type(ortvalues)!r}.")
 
-    res: List[torch.Tensor] = ortvalues.to_dlpacks(_from_dlpack)
+    res: list[torch.Tensor] = ortvalues.to_dlpacks(_from_dlpack)
     bool_indices = ortvalues.bool_tensor_indices()
     if len(bool_indices):
         # DLPack structure does not know for sure if it stores boolean
@@ -91,7 +91,7 @@ def _ortvalues_to_torch_tensor(
         # Second option makes it impossible to directly use `_from_dlpack` or
         # or `from_dlpack` from torch.
         # The best option would be to add boolean type in DLDataTypeCode.
-        for i in range(0, len(bool_indices)):
+        for i in range(len(bool_indices)):
             j = bool_indices[i]
             res[j] = res[j].to(torch.bool)
 
@@ -127,7 +127,7 @@ def _check_same_device(device: torch.device, argument_str: str, *args):
                 )
 
 
-def get_device_index(device: Union[str, int, torch.device]) -> int:
+def get_device_index(device: str | int | torch.device) -> int:
     if isinstance(device, str):
         # could be 'cuda:0', 'cuda:1', or 'cpu'. with cpu, set index=0
         device = torch.device(device)
@@ -136,7 +136,7 @@ def get_device_index(device: Union[str, int, torch.device]) -> int:
     return 0 if device.index is None else device.index
 
 
-def get_device_str(device: Union[str, int, torch.device]) -> str:
+def get_device_str(device: str | int | torch.device) -> str:
     if isinstance(device, str):
         # could be 'cuda:0', 'cuda:1', or 'cpu'. with cpu, set index=0
         if device.find(":") == -1:
@@ -153,7 +153,15 @@ def get_device_str(device: Union[str, int, torch.device]) -> str:
     return device
 
 
-def get_device_from_module(module) -> Optional[torch.device]:
+def get_device_from_module_and_inputs(module, inputs, kwargs):
+    """Get the device from the module and save it to self._device"""
+
+    device = _get_device_from_module(module) or _get_device_from_inputs(inputs, kwargs)
+
+    return device
+
+
+def _get_device_from_module(module) -> torch.device | None:
     """Returns the first device found in the `module`'s parameters or None
 
     Args:
@@ -179,7 +187,7 @@ def get_device_from_module(module) -> Optional[torch.device]:
     return device
 
 
-def get_device_from_inputs(args, kwargs) -> Optional[torch.device]:
+def _get_device_from_inputs(args, kwargs) -> torch.device | None:
     """Returns device from first PyTorch Tensor within args or kwargs
 
     Args:
@@ -192,9 +200,12 @@ def get_device_from_inputs(args, kwargs) -> Optional[torch.device]:
 
     device = None
     if args:
-        device = torch.device(args[0].device)
+        if args[0] is not None and hasattr(args[0], "device"):
+            device = torch.device(args[0].device)
     elif kwargs:
-        device = torch.device(next(iter(kwargs.values())).device)
+        v = next(iter(kwargs.values()))
+        if v is not None and hasattr(v, "device"):
+            device = torch.device(v.device)
     return device
 
 

@@ -14,7 +14,6 @@
 # limitations under the License.
 """BERT finetuning runner."""
 
-
 import argparse
 
 # ==================
@@ -81,9 +80,11 @@ class pretraining_dataset(Dataset):  # noqa: N801
 
     def __getitem__(self, index):
         [input_ids, input_mask, segment_ids, masked_lm_positions, masked_lm_ids, next_sentence_labels] = [
-            torch.from_numpy(input[index].astype(np.int64))
-            if indice < 5
-            else torch.from_numpy(np.asarray(input[index].astype(np.int64)))
+            (
+                torch.from_numpy(input[index].astype(np.int64))
+                if indice < 5
+                else torch.from_numpy(np.asarray(input[index].astype(np.int64)))
+            )
             for indice, input in enumerate(self.inputs)
         ]
 
@@ -231,9 +232,7 @@ def setup_training(args):
         )
     if args.train_batch_size % args.gradient_accumulation_steps != 0:
         raise ValueError(
-            "Invalid gradient_accumulation_steps parameter: {}, batch size {} should be divisible".format(
-                args.gradient_accumulation_steps, args.train_batch_size
-            )
+            f"Invalid gradient_accumulation_steps parameter: {args.gradient_accumulation_steps}, batch size {args.train_batch_size} should be divisible"
         )
 
     args.train_batch_size = args.train_batch_size // args.gradient_accumulation_steps
@@ -337,7 +336,7 @@ def prepare_model_and_optimizer(args, device):
             optimizer._lazy_init_maybe_master_weights()
             optimizer._amp_stash.lazy_init_called = True
             optimizer.load_state_dict(checkpoint["optimizer"])
-            for param, saved_param in zip(amp.master_params(optimizer), checkpoint["master params"]):
+            for param, saved_param in zip(amp.master_params(optimizer), checkpoint["master params"], strict=False):
                 param.data.copy_(saved_param.data)
 
     if args.local_rank != -1:

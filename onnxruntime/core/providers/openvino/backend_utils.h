@@ -1,4 +1,4 @@
-// Copyright (C) 2019-2022 Intel Corporation
+// Copyright (C) Intel Corporation
 // Licensed under the MIT License
 
 #pragma once
@@ -10,10 +10,11 @@
 #include <memory>
 #include <vector>
 #include <string>
+#include <string_view>
 
 #include "core/session/onnxruntime_cxx_api.h"
-#include "contexts.h"
-#include "ov_interface.h"
+#include "core/providers/openvino/contexts.h"
+#include "core/providers/openvino/ov_interface.h"
 #ifdef _WIN32
 #include <direct.h>
 #define GetCurrentDir _getcwd
@@ -29,14 +30,12 @@ namespace openvino_ep {
 namespace backend_utils {
 const std::string log_tag = "[OpenVINO-EP] ";
 
-#ifndef NDEBUG
 bool IsDebugEnabled();
-#endif
 
 // Internal diagnostic function.
 bool IsCILogEnabled();
 
-int GetFirstAvailableDevice(GlobalContext& global_context);
+int GetFirstAvailableDevice(SessionContext& session_context);
 
 void FillOutputsWithConstantData(std::shared_ptr<ov::Node> node, Ort::UnownedValue& out_tensor);
 
@@ -46,14 +45,14 @@ void FillOutputHelper(Ort::UnownedValue& out_tensor, std::shared_ptr<ov::Node> n
 Ort::UnownedValue
 GetOutputTensor(Ort::KernelContext& context,
                 std::string output_name,
-                std::unordered_map<std::string, int> output_names,
+                const SubGraphContext::string_index_map_t& output_names,
                 std::shared_ptr<ov::Node> node);
 
 Ort::UnownedValue
 GetOutputTensor(Ort::KernelContext& context, size_t batch_size,
                 OVInferRequestPtr infer_request,
                 std::string output_name,
-                std::unordered_map<std::string, int> output_names);
+                const SubGraphContext::string_index_map_t& output_names);
 
 void FillInputBlob(OVTensorPtr inputBlob, size_t batch_slice_idx,
                    std::string input_name, Ort::KernelContext& context,
@@ -62,11 +61,15 @@ void FillInputBlob(OVTensorPtr inputBlob, size_t batch_slice_idx,
 void FillOutputBlob(OVTensorPtr outputBlob, Ort::UnownedValue& output_tensor,
                     size_t batch_slice_idx);
 
-std::shared_ptr<OVNetwork>
-CreateOVModel(const ONNX_NAMESPACE::ModelProto& model_proto,
-              const GlobalContext& global_context,
-              const SubGraphContext& subgraph_context,
+std::shared_ptr<const OVNetwork>
+CreateOVModel(const std::string model,
+              const SessionContext& session_context,
               std::map<std::string, std::shared_ptr<ov::Node>>& const_outputs_map);
+
+void CreateOVTensors(const std::string& device_name,
+                     SharedContext::SharedWeights::Metadata::Map& metadata_map,
+                     SharedContext::SharedWeights::WeightsFile& weights);
+void DestroyOVTensors(SharedContext::SharedWeights::Metadata::Map& metadata_map);
 
 void printPerformanceCounts(const std::vector<OVProfilingInfo>& performanceMap,
                             std::ostream& stream, std::string deviceName);

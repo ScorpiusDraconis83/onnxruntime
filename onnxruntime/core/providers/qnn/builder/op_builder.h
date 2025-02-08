@@ -3,9 +3,7 @@
 
 #pragma once
 
-#include "core/graph/graph_viewer.h"
-#include "core/providers/shared/node_unit/node_unit.h"
-#include "core/providers/shared/utils/utils.h"
+#include "core/providers/qnn/ort_api.h"
 
 namespace onnxruntime {
 namespace qnn {

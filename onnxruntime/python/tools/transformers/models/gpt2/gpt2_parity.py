@@ -171,17 +171,15 @@ def print_wins(wins, rows, test_name):
 
     rank = 0
     previous_value = -1
-    count = 0
-    for key, value in sorted_wins.items():
+    for count, (key, value) in enumerate(sorted_wins.items()):
         if value != previous_value:
             rank = count
         previous_value = value
-        count += 1
 
         for row in rows:
             if row["run_id"] == key:
                 logger.info(
-                    "{:02d}: WINs={:02d}, run_id={}, latency={:5.2f}, top1_match={:.4f}, size={}_MB, experiment={}, {}".format(
+                    "{:02d}: WINs={:02d}, run_id={}, latency={:5.2f}, top1_match={:.4f}, size={}_MB, experiment={}, {}".format(  # noqa: G001
                         rank,
                         value,
                         key,
@@ -368,7 +366,7 @@ def run_tuning_step0(task, fp16_baseline, all_ops, optimized_ops):
 
     # Only weights in FP16
     task.run(
-        fp16_baseline + fp32_io + ["--op_block_list"] + [o for o in all_ops] + ["--force_fp16_initializers"],
+        fp16_baseline + fp32_io + ["--op_block_list"] + list(all_ops) + ["--force_fp16_initializers"],
         "FP32 except weights in FP16",
     )
 

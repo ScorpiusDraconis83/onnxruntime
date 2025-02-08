@@ -52,7 +52,7 @@ Status QAttention<T, int8_t>::CheckInputs(const Tensor* input,
   auto& device_prop = GetDeviceProp();
   ORT_RETURN_IF_ERROR(AttentionBase::CheckInputs(input->Shape(), weights->Shape(), bias->Shape(),
                                                  mask_index, past_tensor,
-                                                 nullptr,  // relative_position_bias
+                                                 nullptr,  // attention_bias
                                                  parameters,
                                                  device_prop.maxThreadsPerBlock));
 
@@ -106,6 +106,8 @@ Status QAttention<T, int8_t>::ComputeInternal(OpKernelContext* context) const {
   const Tensor* past_tensor = context->Input<Tensor>(8);
 
   AttentionParameters parameters;
+  parameters.use_tf32 = UseTF32();
+
   ORT_RETURN_IF_ERROR(CheckInputs(input,
                                   weights,
                                   bias,
@@ -152,7 +154,7 @@ Status QAttention<T, int8_t>::ComputeInternal(OpKernelContext* context) const {
   CudaT dequant_scale;
   CudaT input_scale = *(reinterpret_cast<const CudaT*>(input_scale_tensor->Data<T>()));
   CudaT weight_scale = *(reinterpret_cast<const CudaT*>(weight_scale_tensor->Data<T>()));
-  if (sizeof(T) == 2) {
+  if constexpr (sizeof(T) == 2) {
     dequant_scale = __float2half(__half2float(input_scale) * __half2float(weight_scale));
   } else {
     dequant_scale = input_scale * weight_scale;
@@ -177,6 +179,8 @@ Status QAttention<T, int8_t>::ComputeInternal(OpKernelContext* context) const {
   constexpr bool use_fused_cross_attention = false;
   constexpr bool use_memory_efficient_attention = false;
   constexpr bool use_flash_attention = false;
+  constexpr bool use_lean_attention = false;
+  constexpr bool use_cudnn_flash_attention = false;
   size_t workSpaceSize = GetAttentionWorkspaceSize(element_size,
                                                    batch_size,
                                                    parameters.num_heads,
@@ -187,8 +191,11 @@ Status QAttention<T, int8_t>::ComputeInternal(OpKernelContext* context) const {
                                                    parameters.total_sequence_length,
                                                    fused_runner,
                                                    use_flash_attention,
+                                                   use_lean_attention,
                                                    use_fused_cross_attention,
-                                                   use_memory_efficient_attention);
+                                                   use_memory_efficient_attention,
+                                                   use_cudnn_flash_attention,
+                                                   true);
 
   auto work_space = GetScratchBuffer<void>(workSpaceSize, context->GetComputeStream());
 
@@ -206,12 +213,14 @@ Status QAttention<T, int8_t>::ComputeInternal(OpKernelContext* context) const {
 
   data.has_qkv_workspace = true;
   data.workspace = reinterpret_cast<CudaT*>(work_space.get());
+  data.workspace_bytes = workSpaceSize;
   data.output = reinterpret_cast<CudaT*>(output->MutableData<T>());
   if (nullptr != present) {
     data.present = reinterpret_cast<CudaT*>(present->MutableData<T>());
   }
 
-  return QkvToContext<CudaT>(GetDeviceProp(), cublas, context->GetComputeStream(), parameters, data);
+  cudnnHandle_t cudnn = GetCudnnHandle(context);
+  return QkvToContext<CudaT>(GetDeviceProp(), cublas, cudnn, context->GetComputeStream(), parameters, data);
 }
 
 }  // namespace cuda

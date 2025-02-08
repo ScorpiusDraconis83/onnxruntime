@@ -1,4 +1,4 @@
-// Copyright (C) 2019-2022 Intel Corporation
+// Copyright (C) Intel Corporation
 // Licensed under the MIT License
 
 #pragma once
@@ -11,6 +11,8 @@
 #include <string>
 #include <condition_variable>
 #include <mutex>
+#include <map>
+#include <functional>
 
 #include "core/session/onnxruntime_cxx_api.h"
 #include "core/providers/openvino/contexts.h"
@@ -20,17 +22,27 @@
 namespace onnxruntime {
 namespace openvino_ep {
 
+struct ov_tensor_data_t {
+  OVTensorPtr tensor_ptr;
+  const void* ort_ptr;
+};
+
 class InferRequestsQueue;
 class BasicBackend : public IBackend {
  public:
-  BasicBackend(const ONNX_NAMESPACE::ModelProto& model_proto,
-               GlobalContext& global_context,
-               const SubGraphContext& subgraph_context);
+  BasicBackend(std::unique_ptr<ONNX_NAMESPACE::ModelProto>& model_proto,
+               SessionContext& session_context,
+               const SubGraphContext& subgraph_context,
+               SharedContext& shared_context,
+               ptr_stream_t& model_stream);
 
   void Infer(OrtKernelContext* context) override;
+  ~BasicBackend() override = default;
+  ov::CompiledModel& GetOVCompiledModel() override {
+    return exe_network_.Get();
+  }
 
  private:
-  bool ImportBlob(std::string hw_target, bool npu_status);
   void PopulateCompiledDirectory(std::string, std::string&, std::string&, bool&);
   bool ValidateSubgraph(std::map<std::string, std::shared_ptr<ov::Node>>& const_outputs_map);
   void PopulateConfigValue(ov::AnyMap& device_config);
@@ -46,24 +58,28 @@ class BasicBackend : public IBackend {
 
   void CompleteAsyncInference(Ort::KernelContext& context, std::shared_ptr<OVInferRequest> infer_request);
 
-  GlobalContext& global_context_;
+  SessionContext& session_context_;
   SubGraphContext subgraph_context_;
+  SharedContext& shared_context_;
   mutable std::mutex compute_lock_;
-  std::shared_ptr<OVNetwork> ie_cnn_network_;
   OVExeNetwork exe_network_;
   std::map<std::string, std::shared_ptr<ov::Node>> const_outputs_map_;
   std::unique_ptr<InferRequestsQueue> inferRequestsQueue_;
 #if defined IO_BUFFER_ENABLED
   OVRemoteContextPtr remote_context_;
 #endif
+
+  using ort_tensor_key_t = const std::string;
+  std::map<ort_tensor_key_t, ov_tensor_data_t> ort_ov_tensor_map;
 };
 
 class InferRequestsQueue {
  public:
-  InferRequestsQueue(OVExeNetwork& net, size_t nireq) {
+  InferRequestsQueue(OVExeNetwork& net, size_t nireq, std::function<void(OVInferRequestPtr)> initializer) {
     OVInferRequestPtr infer_request;
     for (size_t id = 0; id < nireq; id++) {
       infer_request = std::make_shared<OVInferRequest>(net.CreateInferRequest());
+      initializer(infer_request);
       infer_requests_.push_back(infer_request);
     }
   }

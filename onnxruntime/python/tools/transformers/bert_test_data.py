@@ -10,7 +10,6 @@ import argparse
 import os
 import random
 from pathlib import Path
-from typing import Dict, Optional, Tuple
 
 import numpy as np
 from onnx import ModelProto, TensorProto, numpy_helper
@@ -157,7 +156,7 @@ def fake_input_mask_data(
     return data
 
 
-def output_test_data(directory: str, inputs: Dict[str, np.ndarray]):
+def output_test_data(directory: str, inputs: dict[str, np.ndarray]):
     """Output input tensors of test data to a directory
 
     Args:
@@ -168,18 +167,16 @@ def output_test_data(directory: str, inputs: Dict[str, np.ndarray]):
         try:
             os.mkdir(directory)
         except OSError:
-            print("Creation of the directory %s failed" % directory)
+            print(f"Creation of the directory {directory} failed")
         else:
-            print("Successfully created the directory %s " % directory)
+            print(f"Successfully created the directory {directory} ")
     else:
-        print("Warning: directory %s existed. Files will be overwritten." % directory)
+        print(f"Warning: directory {directory} existed. Files will be overwritten.")
 
-    index = 0
-    for name, data in inputs.items():
+    for index, (name, data) in enumerate(inputs.items()):
         tensor = numpy_helper.from_array(data, name)
         with open(os.path.join(directory, f"input_{index}.pb"), "wb") as file:
             file.write(tensor.SerializeToString())
-        index += 1
 
 
 def fake_test_data(
@@ -252,6 +249,7 @@ def generate_test_data(
     average_sequence_length: int,
     random_sequence_length: bool,
     mask_type: int,
+    dictionary_size: int = 10000,
 ):
     """Create given number of input data for testing
 
@@ -272,7 +270,6 @@ def generate_test_data(
         List[Dict[str,numpy.ndarray]]: list of test cases, where each test case is a dictionary
                                        with input name as key and a tensor as value
     """
-    dictionary_size = 10000
     all_inputs = fake_test_data(
         batch_size,
         sequence_length,
@@ -307,10 +304,10 @@ def get_graph_input_from_embed_node(onnx_model, embed_node, input_index):
 
 def find_bert_inputs(
     onnx_model: OnnxModel,
-    input_ids_name: Optional[str] = None,
-    segment_ids_name: Optional[str] = None,
-    input_mask_name: Optional[str] = None,
-) -> Tuple[Optional[np.ndarray], Optional[np.ndarray], Optional[np.ndarray]]:
+    input_ids_name: str | None = None,
+    segment_ids_name: str | None = None,
+    input_mask_name: str | None = None,
+) -> tuple[np.ndarray | None, np.ndarray | None, np.ndarray | None]:
     """Find graph inputs for BERT model.
     First, we will deduce inputs from EmbedLayerNormalization node.
     If not found, we will guess the meaning of graph inputs based on naming.
@@ -399,10 +396,10 @@ def find_bert_inputs(
 
 def get_bert_inputs(
     onnx_file: str,
-    input_ids_name: Optional[str] = None,
-    segment_ids_name: Optional[str] = None,
-    input_mask_name: Optional[str] = None,
-) -> Tuple[Optional[np.ndarray], Optional[np.ndarray], Optional[np.ndarray]]:
+    input_ids_name: str | None = None,
+    segment_ids_name: str | None = None,
+    input_mask_name: str | None = None,
+) -> tuple[np.ndarray | None, np.ndarray | None, np.ndarray | None]:
     """Find graph inputs for BERT model.
     First, we will deduce inputs from EmbedLayerNormalization node.
     If not found, we will guess the meaning of graph inputs based on naming.
@@ -533,9 +530,9 @@ def create_and_save_test_data(
     test_cases: int,
     seed: int,
     verbose: bool,
-    input_ids_name: Optional[str],
-    segment_ids_name: Optional[str],
-    input_mask_name: Optional[str],
+    input_ids_name: str | None,
+    segment_ids_name: str | None,
+    input_mask_name: str | None,
     only_input_tensors: bool,
     average_sequence_length: int,
     random_sequence_length: bool,

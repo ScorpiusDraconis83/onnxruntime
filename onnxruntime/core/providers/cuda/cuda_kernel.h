@@ -6,7 +6,7 @@
 #include "core/providers/cuda/cuda_common.h"
 #include "core/providers/cuda/cuda_execution_provider.h"
 #include "core/providers/cuda/cuda_fwd.h"
-#include "core/platform/ort_mutex.h"
+#include <mutex>
 #include "core/providers/cuda/cuda_stream_handle.h"
 
 namespace onnxruntime {
@@ -89,6 +89,16 @@ class CudaKernel : public OpKernel {
   static inline cublasHandle_t GetCublasHandle(onnxruntime::CudaStream* stream) {
     return stream->cublas_handle_;
   }
+
+  bool UseTF32() const {
+    return provider_->UseTF32();
+  }
+
+#ifndef DISABLE_CONTRIB_OPS
+  const AttentionKernelOptions* GetAttentionKernelOptions() const {
+    return provider_->GetAttentionKernelOptions();
+  }
+#endif
 
   tunable::CudaTuningContext* GetTuningContext() const {
     return static_cast<tunable::CudaTuningContext*>(provider_->GetTuningContext());

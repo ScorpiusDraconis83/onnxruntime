@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
 
-#include <onnx/onnx_pb.h>
+#include "core/graph/onnx_protobuf.h"
 
 #include "core/common/logging/logging.h"
 #include "core/common/safeint.h"
@@ -37,7 +37,7 @@ class MinMaxOpBuilder : public BaseOpBuilder {
   // Min/Max opset 5- uses consumed_inputs attribute which is not supported for now
   int GetMinSupportedOpSet(const NodeUnit& /* node_unit */) const override { return 6; }
 
-  bool IsOpSupportedImpl(const InitializedTensorSet& initializers, const NodeUnit& node_unit,
+  bool IsOpSupportedImpl(const GraphViewer& graph_viewer, const NodeUnit& node_unit,
                          const OpSupportCheckParams& params) const override;
 };
 
@@ -53,7 +53,7 @@ Status MinMaxOpBuilder::AddToModelBuilderImpl(ModelBuilder& model_builder, const
 
 // Operator support related
 
-bool MinMaxOpBuilder::IsOpSupportedImpl(const InitializedTensorSet& /* initializers */, const NodeUnit& node_unit,
+bool MinMaxOpBuilder::IsOpSupportedImpl(const GraphViewer& /* graph_viewer */, const NodeUnit& node_unit,
                                         const OpSupportCheckParams& /* params */) const {
   // TODO: support 2+ inputs for Min/Max op
   if (node_unit.Inputs().size() != 2) {

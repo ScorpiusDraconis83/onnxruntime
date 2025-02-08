@@ -15,7 +15,7 @@ c) BUILD_CONFIG=${OPTARG};;
 esac
 done
 
-export PATH=/opt/python/cp38-cp38/bin:$PATH
+export PATH=/opt/python/cp310-cp310/bin:$PATH
 cd /build
 files=(whl/*.whl)
 FILE_NAME="${files[0]}"
@@ -25,6 +25,10 @@ PYTHON_PACKAGE_NAME=$(echo "$FILE_NAME" | cut -f 1 -d '-')
 echo "Package name:$PYTHON_PACKAGE_NAME"
 
 BUILD_ARGS="--build_dir /build --config $BUILD_CONFIG --test --skip_submodule_sync --parallel --enable_lto --build_wheel "
+
+if [[ "$PYTHON_PACKAGE_NAME" == *"training"* ]]; then
+  BUILD_ARGS="$BUILD_ARGS --enable_training"
+fi
 
 ARCH=$(uname -m)
 
@@ -37,12 +41,12 @@ if [ $BUILD_DEVICE == "GPU" ]; then
 
     BUILD_ARGS="$BUILD_ARGS --use_cuda --use_tensorrt --cuda_version=$SHORT_CUDA_VERSION --tensorrt_home=/usr --cuda_home=/usr/local/cuda-$SHORT_CUDA_VERSION --cudnn_home=/usr/local/cuda-$SHORT_CUDA_VERSION"
 fi
-# We assume the machine doesn't have gcc and python development header files, so we don't build onnxruntime from source
+
 python3 -m pip install --upgrade pip
 # Install the packages that are needed for installing the onnxruntime python package
 python3 -m pip install -r /build/$BUILD_CONFIG/requirements.txt
 # Install the packages that are needed for running test scripts
-python3 -m pip install pytest
+python3 -m pip install -r /onnxruntime_src/tools/ci_build/github/linux/python/requirements.txt
 # The "--no-index" flag is crucial. The local whl folder is just an additional source. Pypi's doc says "there is no 
 # ordering in the locations that are searched" if we don't disable the default one with "--no-index"
 python3 -m pip install --no-index --find-links /build/whl $PYTHON_PACKAGE_NAME

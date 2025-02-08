@@ -6,22 +6,23 @@
 Builds an Ubuntu-based Docker image with TensorRT.
 """
 
+from __future__ import annotations
+
 import argparse
 import os
 import pty
 import shlex
+import subprocess
 import sys
-from typing import List, Optional
 
 TRT_DOCKER_FILES = {
-    "8.4": "tools/ci_build/github/linux/docker/Dockerfile.ubuntu_cuda11_6_tensorrt8_4",
-    "8.5": "tools/ci_build/github/linux/docker/Dockerfile.ubuntu_cuda11_8_tensorrt8_5",
-    "8.6": "tools/ci_build/github/linux/docker/Dockerfile.ubuntu_cuda11_8_tensorrt8_6",
+    "10.8_cuda11.8_cudnn8": "tools/ci_build/github/linux/docker/Dockerfile.ubuntu_cuda11_tensorrt10",
+    "10.8_cuda12.6_cudnn9": "tools/ci_build/github/linux/docker/Dockerfile.ubuntu_cuda12_tensorrt10",
     "BIN": "tools/ci_build/github/linux/docker/Dockerfile.ubuntu_tensorrt_bin",
 }
 
 
-def run_cmd(cmd: List[str]) -> Optional[int]:
+def run_cmd(cmd: list[str]) -> int | None:
     """
     Runs a shell command and returns the process's return code.
 
@@ -36,7 +37,7 @@ def run_cmd(cmd: List[str]) -> Optional[int]:
     return pty.spawn(cmd)
 
 
-def get_common_docker_build_args(args: argparse.Namespace) -> List[str]:
+def get_common_docker_build_args(args: argparse.Namespace) -> list[str]:
     """
     Returns a list of common 'docker build' command-line arguments/options.
 
@@ -45,7 +46,7 @@ def get_common_docker_build_args(args: argparse.Namespace) -> List[str]:
     :return: A list of common 'docker build' arguments.
     """
 
-    return [
+    command = [
         "--no-cache",
         "-t",
         f"{args.image_name}",
@@ -54,6 +55,14 @@ def get_common_docker_build_args(args: argparse.Namespace) -> List[str]:
         "--build-arg",
         f"ONNXRUNTIME_BRANCH={args.branch}",
     ]
+    if args.use_tensorrt_oss_parser:
+        command.extend(
+            [
+                "--build-arg",
+                "PARSER_CONFIG=--use_tensorrt_oss_parser",
+            ]
+        )
+    return command
 
 
 def is_valid_ver_str(version: str, min_comps: int = 0, max_comps: int = 0) -> bool:
@@ -91,18 +100,11 @@ def docker_build_trt(args: argparse.Namespace):
     :param args: The arguments to this script.
     """
 
-    if not is_valid_ver_str(args.trt_version, min_comps=2, max_comps=4):
-        print(f"[ERROR]: Invalid TensorRT version '{args.trt_version}'", file=sys.stderr)
-        sys.exit(1)
-
-    vers_comps = args.trt_version.split(".")
-    trt_ver_key = f"{vers_comps[0]}.{vers_comps[1]}"
-
-    if trt_ver_key not in TRT_DOCKER_FILES:
+    if args.trt_version not in TRT_DOCKER_FILES:
         print(f"[ERROR]: TensorRT version '{args.trt_version}' is currently unsupported", file=sys.stderr)
         sys.exit(1)
 
-    docker_file = TRT_DOCKER_FILES[trt_ver_key]
+    docker_file = TRT_DOCKER_FILES[args.trt_version]
     docker_file_path = os.path.normpath(os.path.join(args.repo_path, docker_file))
 
     if not os.path.isfile(docker_file_path):
@@ -136,11 +138,7 @@ def docker_build_trt_bin(args: argparse.Namespace):
         sys.exit(1)
 
     if not is_valid_ver_str(args.tar_cuda_version, 2, 2):
-        print("[ERROR]: Must specify a valid CUDA version for binary TensorRT installs (e.g., 11.x)", file=sys.stderr)
-        sys.exit(1)
-
-    if not is_valid_ver_str(args.tar_cudnn_version, 2, 2):
-        print("[ERROR]: Must specify a valid cuDNN version for binary TensorRT installs (e.g., 8.x)", file=sys.stderr)
+        print("[ERROR]: Must specify a valid CUDA version for binary TensorRT installs (e.g., 12.4)", file=sys.stderr)
         sys.exit(1)
 
     if not os.path.isfile(docker_file_path):
@@ -162,8 +160,6 @@ def docker_build_trt_bin(args: argparse.Namespace):
             "--build-arg",
             f"TAR_CUDA_VERSION={args.tar_cuda_version}",
             "--build-arg",
-            f"TAR_CUDNN_VERSION={args.tar_cudnn_version}",
-            "--build-arg",
             f"TRT_BINS_DIR={args.trt_bins_dir}",
             "-f",
             f"{docker_file_path}",
@@ -174,6 +170,55 @@ def docker_build_trt_bin(args: argparse.Namespace):
     if cmd_ret != 0:
         print(f"[ERROR]: docker build command failed with return code {cmd_ret}", file=sys.stderr)
         sys.exit(1)
+
+
+def overwrite_onnx_tensorrt_commit_id(commit_id):
+    """
+    Overwrite onnx-tensorrt commit id in cmake/deps.txt.
+    """
+    deps_file_path = "../../../../../../cmake/deps.txt"
+    line_index = None
+    zip_url = None
+
+    with open(deps_file_path) as file:
+        lines = file.readlines()
+
+    for i, line in enumerate(lines):
+        if line.startswith("onnx_tensorrt"):
+            parts = line.split(";")
+            zip_url = ";".join([parts[0], f"https://github.com/onnx/onnx-tensorrt/archive/{commit_id}.zip", parts[2]])
+            line_index = i
+            break
+
+    if line_index and zip_url:
+        wget_command = f"wget {zip_url.split(';')[1]} -O temp.zip"
+        subprocess.run(wget_command, shell=True, check=True)
+
+        sha1sum_command = "sha1sum temp.zip"
+        result = subprocess.run(sha1sum_command, shell=True, capture_output=True, text=True, check=True)
+        hash_value = result.stdout.split()[0]
+
+        lines[line_index] = zip_url.split(";")[0] + ";" + zip_url.split(";")[1] + ";" + hash_value + "\n"
+
+        with open(deps_file_path, "w") as file:
+            file.writelines(lines)
+
+        print(f"Updated deps.txt with new commit id {commit_id} and hash {hash_value}")
+
+        # Verify updated deps.txt
+        try:
+            with open(deps_file_path) as file:
+                lines = file.readlines()
+                for line in lines:
+                    if line.startswith("onnx_tensorrt"):
+                        print(line.strip())
+                        break
+        except Exception as e:
+            print(f"Failed to read the file: {e}")
+
+        os.remove("temp.zip")
+    else:
+        print("onnx_tensorrt commit id overwrite failed, entry not found in deps.txt")
 
 
 def parse_arguments() -> argparse.Namespace:
@@ -187,8 +232,11 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("-r", "--repo_path", required=True, help="Path to the onnxruntime repository")
     parser.add_argument("-i", "--image_name", required=True, help="The resulting Docker image name")
     parser.add_argument("-b", "--branch", default="main", help="Name of the onnxruntime git branch to checkout")
-    parser.add_argument("-t", "--trt_version", default="8.4.1.5", help="TensorRT version (e.g., 8.4.1.5)")
+    parser.add_argument(
+        "-t", "--trt_version", default="8.6.cuda_11_8_cudnn_8", help="TensorRT version (e.g., 8.6.cuda_11_8_cudnn_8)"
+    )
     parser.add_argument("-a", "--cuda_arch", default="75", help="CUDA architecture (e.g., 75)")
+    parser.add_argument("-o", "--oss_parser_commit_id", default="", help="commit id of onnx-tensorrt")
 
     # Command-line options for installing TensorRT from binaries.
     parser.add_argument(
@@ -200,14 +248,15 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument(
         "--tar_cuda_version",
         default="",
-        help="CUDA version (e.g., 11.8) used to find TensorRT EA binary tar.gz package",
-    )
-    parser.add_argument(
-        "--tar_cudnn_version",
-        default="",
-        help="CUDA version (e.g., 8.6) used to find TensorRT EA binary tar.gz package",
+        help="CUDA version (e.g., 12.4) used to find TensorRT EA binary tar.gz package",
     )
     parser.add_argument("--trt_bins_dir", default="", help="Directory containing TensorRT tar.gz package")
+    parser.add_argument(
+        "--use_tensorrt_oss_parser",
+        action="store_true",
+        default=False,
+        help="Use TensorRT OSS Parser",
+    )
 
     return parser.parse_args()
 
@@ -224,6 +273,8 @@ def main() -> int:
     if args.install_bin:
         docker_build_trt_bin(args)
     else:
+        if args.oss_parser_commit_id != "":
+            overwrite_onnx_tensorrt_commit_id(args.oss_parser_commit_id)
         docker_build_trt(args)
 
     return 0

@@ -3,11 +3,11 @@ import java.nio.file.Paths
 buildscript {
   repositories {
     google()
-    jcenter()
+    mavenCentral()
   }
 
   dependencies {
-    classpath 'com.android.tools.build:gradle:4.1.2'
+    classpath 'com.android.tools.build:gradle:7.4.2'
     // noinspection DifferentKotlinGradleVersion
   }
 }
@@ -70,6 +70,8 @@ def REACT_NATIVE_VERSION = ['node', '--print', "JSON.parse(require('fs').readFil
 def REACT_NATIVE_MINOR_VERSION = REACT_NATIVE_VERSION.split("\\.")[1].toInteger()
 
 android {
+// This is needed by the new AndroidManifestNew.xml
+  namespace "ai.onnxruntime.reactnative"
   compileSdkVersion getExtOrIntegerDefault('compileSdkVersion')
   buildToolsVersion getExtOrDefault('buildToolsVersion')
   defaultConfig {
@@ -110,6 +112,8 @@ android {
   }
 
   packagingOptions {
+    pickFirst '**/libc++_shared.so'
+    pickFirst '**/libfbjni.so'
     doNotStrip resolveBuildType() == 'debug' ? "**/**/*.so" : ''
     excludes = [
       "META-INF",
@@ -127,13 +131,15 @@ android {
     disable 'GradleCompatible'
   }
   compileOptions {
-    sourceCompatibility JavaVersion.VERSION_1_8
-    targetCompatibility JavaVersion.VERSION_1_8
+    sourceCompatibility JavaVersion.VERSION_17
+    targetCompatibility JavaVersion.VERSION_17
   }
 
   sourceSets {
     main {
       java.srcDirs = ['src/main/java/']
+//       A tricky situation where iOS still uses the AndroidManifest.xml file, but the Android use AndroidManifestNew.xml
+      manifest.srcFile "src/main/AndroidManifestNew.xml"
       if (ortExtensionsEnabled) {
         java.exclude '**/OnnxruntimeExtensionsDisabled.java'
       } else {
@@ -145,7 +151,6 @@ android {
 
 repositories {
   mavenCentral()
-  jcenter()
   google()
 
   def found = false
@@ -219,18 +224,16 @@ repositories {
 }
 
 dependencies {
-  api "com.facebook.react:react-native:" + REACT_NATIVE_VERSION
+  //noinspection GradleDynamicVersion
+  implementation "com.facebook.react:react-android:"+ REACT_NATIVE_VERSION
   api "org.mockito:mockito-core:2.28.2"
 
-  androidTestImplementation "androidx.test:runner:1.1.0"
-  androidTestImplementation "androidx.test:rules:1.1.0"
-
+  androidTestImplementation "androidx.test:runner:1.5.2"
+  androidTestImplementation "androidx.test:rules:1.5.0"
   implementation "junit:junit:4.12"
 
   androidTestImplementation "com.linkedin.dexmaker:dexmaker-mockito-inline-extended:2.28.1"
 
-  // Mobile build:
-  // implementation "com.microsoft.onnxruntime:onnxruntime-mobile:latest.integration@aar"
   implementation "com.microsoft.onnxruntime:onnxruntime-android:latest.integration@aar"
 
   // By default it will just include onnxruntime full aar package

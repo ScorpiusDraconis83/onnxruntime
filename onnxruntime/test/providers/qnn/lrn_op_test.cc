@@ -9,7 +9,7 @@
 #include "test/optimizer/qdq_test_utils.h"
 #include "test/providers/qnn/qnn_test_utils.h"
 
-#include "onnx/onnx_pb.h"
+#include "core/graph/onnx_protobuf.h"
 
 #include "gtest/gtest.h"
 
@@ -70,6 +70,7 @@ static void RunCPULRNOpTest(const TestInputDef<float>& input_def, int64_t size,
   provider_options["backend_path"] = "libQnnCpu.so";
   fp32_abs_err = 1.5e-5f;  // On linux we need slightly larger tolerance.
 #endif
+  provider_options["offload_graph_io_quantization"] = "0";
 
   RunQnnModelTest(BuildLRNTestCase(input_def, size, alpha, beta, bias),
                   provider_options,
@@ -91,6 +92,7 @@ static void RunQDQLRNOpTest(const TestInputDef<float>& input_def, int64_t size,
 #else
   provider_options["backend_path"] = "libQnnHtp.so";
 #endif
+  provider_options["offload_graph_io_quantization"] = "0";
 
   TestQDQModelAccuracy(BuildLRNTestCase(input_def, size, alpha, beta, bias),
                        BuildQDQLRNTestCase<QuantType>(input_def, size, alpha, beta, bias),
@@ -135,8 +137,8 @@ TEST_F(QnnHTPBackendTests, LRNSize3) {
                            0.75f,    // beta
                            1.0f,     // bias
                            13,       // opset
-                           // Need to use tolerance of 0.405% of output range after QNN SDK 2.17
-                           QDQTolerance(0.00405f));
+                           // Need to use tolerance of 0.8% of output range after QNN SDK 2.22
+                           QDQTolerance(0.008f));
 }
 
 TEST_F(QnnHTPBackendTests, LRNSize5) {
@@ -147,8 +149,8 @@ TEST_F(QnnHTPBackendTests, LRNSize5) {
                            0.75f,    // beta
                            1.0f,     // bias
                            13,       // opset
-                           // Need to use tolerance of 0.407% of output range after QNN SDK 2.17
-                           QDQTolerance(0.00407f));
+                           // Need to use tolerance of 0.8% of output range after QNN SDK 2.22
+                           QDQTolerance(0.008f));
 }
 
 TEST_F(QnnHTPBackendTests, LRN_size_larger_than_channel) {

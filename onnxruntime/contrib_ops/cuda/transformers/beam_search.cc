@@ -5,7 +5,7 @@
 #include "core/providers/cuda/cuda_execution_provider.h"
 #include "contrib_ops/cuda/transformers/beam_search.h"
 #include "contrib_ops/cuda/transformers/generation_device_helper.h"
-#include "contrib_ops/cuda/transformers/dump_cuda_tensor.h"
+#include "contrib_ops/cuda/utils/dump_cuda_tensor.h"
 
 namespace onnxruntime {
 namespace contrib {
@@ -49,13 +49,14 @@ ONNX_OPERATOR_KERNEL_EX(
         .InputMemoryType(OrtMemTypeCPUInput, 9)    // 'attention_mask' needs to be on CPU
         .InputMemoryType(OrtMemTypeCPUInput, 10)   // 'decoder_input_ids' needs to be on CPU
         .InputMemoryType(OrtMemTypeCPUInput, 11)   // 'logits_processor' needs to be on CPU
+        .InputMemoryType(OrtMemTypeCPUInput, 14)   // 'temperature' needs to be on CPU
         .OutputMemoryType(OrtMemTypeCPUOutput, 0)  // 'sequences' output on CPU
         .OutputMemoryType(OrtMemTypeCPUOutput, 1)  // 'sequences_scores' output on CPU
         .TypeConstraint("T", {DataTypeImpl::GetTensorType<float>(),
                               DataTypeImpl::GetTensorType<MLFloat16>()}),
     WhisperBeamSearch);
 
-transformers::CudaTensorConsoleDumper g_cuda_dumper;
+CudaTensorConsoleDumper g_cuda_dumper;
 
 BeamSearch::BeamSearch(const OpKernelInfo& info)
     : onnxruntime::contrib::transformers::BeamSearch(info) {

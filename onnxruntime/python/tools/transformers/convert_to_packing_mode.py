@@ -6,7 +6,6 @@
 import argparse
 import logging
 import os
-from typing import List, Union
 
 import coloredlogs
 from constants import (
@@ -26,15 +25,15 @@ logger = logging.getLogger(__name__)
 class PackingAttentionBase:
     def __init__(self, model: OnnxModel, attention_op_type: str):
         self.model: OnnxModel = model
-        self.nodes_to_remove: List = []
-        self.nodes_to_add: List = []
+        self.nodes_to_remove: list = []
+        self.nodes_to_add: list = []
         self.prune_graph: bool = False
         self.node_name_to_graph_name: dict = {}
         self.this_graph_name: str = self.model.model.graph.name
         self.attention_op_type = attention_op_type
         self.attention_nodes = self.model.get_nodes_by_op_type(attention_op_type)
 
-    def _try_getting_attention_mask(self) -> Union[str, None]:
+    def _try_getting_attention_mask(self) -> str | None:
         mask_index = (
             AttentionInputIDs.MASK_INDEX
             if self.attention_op_type == Operators.ATTENTION
@@ -54,13 +53,13 @@ class PackingAttentionBase:
 
         return attention_mask
 
-    def _try_getting_first_attention(self) -> Union[NodeProto, None]:
+    def _try_getting_first_attention(self) -> NodeProto | None:
         if len(self.attention_nodes) <= 0:
             return None
 
         return self.attention_nodes[0]
 
-    def _try_getting_last_layernorm(self) -> Union[NodeProto, None]:
+    def _try_getting_last_layernorm(self) -> NodeProto | None:
         last_layernorm_node = None
         for node in self.model.nodes():
             if node.op_type == Operators.LAYERNORM or node.op_type == Operators.SKIPLAYERNORM:
@@ -70,7 +69,7 @@ class PackingAttentionBase:
     def _are_attentions_supported(self) -> bool:
         raise NotImplementedError()
 
-    def _insert_removepadding_node(self, inputs: List[str], outputs: List[str]) -> None:
+    def _insert_removepadding_node(self, inputs: list[str], outputs: list[str]) -> None:
         new_node = helper.make_node(
             Operators.REMOVEPADDING,
             inputs=inputs,
@@ -82,7 +81,7 @@ class PackingAttentionBase:
         self.nodes_to_add.append(new_node)
         self.node_name_to_graph_name[new_node.name] = self.this_graph_name
 
-    def _insert_restorepadding_node(self, inputs: List[str], outputs: List[str]) -> None:
+    def _insert_restorepadding_node(self, inputs: list[str], outputs: list[str]) -> None:
         new_node = helper.make_node(
             Operators.RESTOREPADDING,
             inputs=inputs,
@@ -97,7 +96,7 @@ class PackingAttentionBase:
     def _replace_attention_with_packing_attention(self, token_offset: str, cumulative_sequence_length: str) -> None:
         raise NotImplementedError()
 
-    def _get_input_to_remove_padding(self, first_attention_node) -> Union[str, None]:
+    def _get_input_to_remove_padding(self, first_attention_node) -> str | None:
         if self.attention_op_type == Operators.ATTENTION:
             return first_attention_node.input[AttentionInputIDs.INPUT]
         return None
@@ -184,9 +183,9 @@ class PackingAttention(PackingAttentionBase):
 
     def _replace_attention_with_packing_attention(self, token_offset: str, cumulative_sequence_length: str) -> None:
         for attention in self.attention_nodes:
-            relative_pos_bias = (
-                attention.input[AttentionInputIDs.RELATIVE_POSITION_BIAS]
-                if len(attention.input) > AttentionInputIDs.RELATIVE_POSITION_BIAS
+            attention_bias = (
+                attention.input[AttentionInputIDs.ATTENTION_BIAS]
+                if len(attention.input) > AttentionInputIDs.ATTENTION_BIAS
                 else ""
             )
             packed_attention = helper.make_node(
@@ -197,7 +196,7 @@ class PackingAttention(PackingAttentionBase):
                     attention.input[AttentionInputIDs.BIAS],
                     token_offset,
                     cumulative_sequence_length,
-                    relative_pos_bias,
+                    attention_bias,
                 ],
                 outputs=[attention.output[AttentionOutputIDs.OUTPUT]],
                 name=self.model.create_node_name(Operators.PACKEDATTENTION),
@@ -261,9 +260,9 @@ class PackingMultiHeadAttention(PackingAttentionBase):
     def _replace_attention_with_packing_attention(self, token_offset: str, cumulative_sequence_length: str) -> None:
         gated_relative_pos_bias_count = 0
         for mha in self.attention_nodes:
-            relative_pos_bias = (
-                mha.input[MultiHeadAttentionInputIDs.RELATIVE_POSITION_BIAS]
-                if len(mha.input) > MultiHeadAttentionInputIDs.RELATIVE_POSITION_BIAS
+            attention_bias = (
+                mha.input[MultiHeadAttentionInputIDs.ATTENTION_BIAS]
+                if len(mha.input) > MultiHeadAttentionInputIDs.ATTENTION_BIAS
                 else ""
             )
             packed_mha = helper.make_node(
@@ -275,7 +274,7 @@ class PackingMultiHeadAttention(PackingAttentionBase):
                     mha.input[MultiHeadAttentionInputIDs.BIAS],
                     token_offset,
                     cumulative_sequence_length,
-                    relative_pos_bias,
+                    attention_bias,
                 ],
                 outputs=[mha.output[MultiHeadAttentionOutputIDs.OUTPUT]],
                 name=self.model.create_node_name(Operators.PACKED_MULTI_HEAD_ATTENTION),
@@ -293,8 +292,8 @@ class PackingMultiHeadAttention(PackingAttentionBase):
             self.node_name_to_graph_name[packed_mha.name] = self.this_graph_name
 
             # Append token_offset input to GatedRelativePositionBias
-            if relative_pos_bias:
-                rel_pos_bias_node = self.model.get_parent(mha, MultiHeadAttentionInputIDs.RELATIVE_POSITION_BIAS)
+            if attention_bias:
+                rel_pos_bias_node = self.model.get_parent(mha, MultiHeadAttentionInputIDs.ATTENTION_BIAS)
                 if (
                     rel_pos_bias_node
                     and rel_pos_bias_node.op_type == "GatedRelativePositionBias"
@@ -306,7 +305,7 @@ class PackingMultiHeadAttention(PackingAttentionBase):
         logger.info("Converted %d MultiHeadAttention nodes to PackedMultiHeadAttention.", len(self.attention_nodes))
         logger.info("Converted %d GatedRelativePositionBias nodes to packing mode.", gated_relative_pos_bias_count)
 
-    def _get_input_to_remove_padding(self, first_attention_node) -> Union[str, None]:
+    def _get_input_to_remove_padding(self, first_attention_node) -> str | None:
         # When there are query, key and value inputs, we need to find the first input of the parent MatMul node.
         matmul = self.model.get_parent(first_attention_node, 0)
         if matmul and matmul.op_type == "MatMul":

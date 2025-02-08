@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
 
-#include <onnx/onnx_pb.h>
+#include "core/graph/onnx_protobuf.h"
 
 #include "core/common/logging/logging.h"
 #include "core/common/safeint.h"
@@ -29,7 +29,7 @@ class CastOpBuilder : public BaseOpBuilder {
 
   // Operator support related
  private:
-  bool IsOpSupportedImpl(const InitializedTensorSet& initializers, const NodeUnit& node_unit,
+  bool IsOpSupportedImpl(const GraphViewer& graph_viewer, const NodeUnit& node_unit,
                          const OpSupportCheckParams& params) const override;
 
   int32_t GetMinSupportedNNAPIFeatureLevel(const NodeUnit& /* node_unit */,
@@ -70,7 +70,7 @@ Status CastOpBuilder::AddToModelBuilderImpl(ModelBuilder& model_builder, const N
   return Status::OK();
 }
 
-bool CastOpBuilder::IsOpSupportedImpl(const InitializedTensorSet& /* initializers */, const NodeUnit& node_unit,
+bool CastOpBuilder::IsOpSupportedImpl(const GraphViewer& /* graph_viewer */, const NodeUnit& node_unit,
                                       const OpSupportCheckParams& /* params */) const {
   NodeAttrHelper helper(node_unit);
   const auto to = helper.Get("to", 0);
