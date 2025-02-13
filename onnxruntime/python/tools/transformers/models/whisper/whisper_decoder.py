@@ -8,7 +8,6 @@ import logging
 import os
 import tempfile
 from pathlib import Path
-from typing import List, Optional, Union
 
 import numpy
 import onnx
@@ -18,6 +17,7 @@ from models.t5.past_helper import PastKeyValuesHelper
 from onnx_model import OnnxModel
 from torch_onnx_export_helper import torch_onnx_export
 from transformers import WhisperConfig, file_utils
+from whisper_openai_helper import WhisperDecoderInitOpenai
 
 from onnxruntime import InferenceSession
 
@@ -33,7 +33,7 @@ class WhisperDecoderInit(torch.nn.Module):
         self,
         decoder: torch.nn.Module,
         config: WhisperConfig,
-        decoder_start_token_id: Optional[int] = None,
+        decoder_start_token_id: int | None = None,
     ):
         super().__init__()
         self.decoder = decoder
@@ -67,10 +67,13 @@ class WhisperDecoderInit(torch.nn.Module):
 class WhisperDecoder(torch.nn.Module):
     """A Whisper decoder with past key values"""
 
-    def __init__(self, decoder, config):
+    def __init__(self, decoder, config, model_impl: str = "hf", model: torch.nn.Module = None):
         super().__init__()
         self.decoder = decoder
         self.config = config
+        self.model_impl = model_impl
+        if model is not None:
+            self.whisper_decoder_openai_init = WhisperDecoderInitOpenai(model, decoder)
 
     def forward(self, decoder_input_ids, *past):
         encoder_outputs = file_utils.ModelOutput()
@@ -78,6 +81,14 @@ class WhisperDecoder(torch.nn.Module):
         encoder_outputs["last_hidden_state"] = dummy_encoder_hidden_states
         encoder_outputs["hidden_states"] = dummy_encoder_hidden_states
         encoder_outputs["attentions"] = None
+
+        if self.model_impl == "openai":
+            dummy_encoder_hidden_states.unsqueeze(0)
+            dec_out, present = self.whisper_decoder_openai_init(
+                decoder_input_ids, dummy_encoder_hidden_states, past=past
+            )
+            return dec_out, present
+
         if len(past) == 0:
             past_key_values = None
         else:
@@ -103,7 +114,7 @@ class WhisperDecoderInputs:
         past_key_values=None,
     ):
         self.decoder_input_ids: torch.LongTensor = decoder_input_ids
-        self.past_key_values: Union[List[torch.FloatTensor], List[torch.HalfTensor], None] = past_key_values
+        self.past_key_values: list[torch.FloatTensor] | list[torch.HalfTensor] | None = past_key_values
 
     @staticmethod
     def create_dummy(
@@ -114,6 +125,7 @@ class WhisperDecoderInputs:
         device: torch.device,
         float16: bool = False,
         use_int32_inputs: bool = False,
+        model_impl: str = "hf",
     ):  # -> WhisperDecoderInputs:
         """Create dummy inputs for WhisperDecoder.
 
@@ -158,7 +170,7 @@ class WhisperDecoderInputs:
             cross_attention_past_shape = [
                 batch_size,
                 num_attention_heads,
-                encode_sequence_length,
+                encode_sequence_length if model_impl == "hf" else past_decode_sequence_length,
                 head_size,
             ]
 
@@ -173,7 +185,7 @@ class WhisperDecoderInputs:
 
         return WhisperDecoderInputs(decoder_input_ids, past)
 
-    def to_list(self) -> List:
+    def to_list(self) -> list:
         input_list = [self.decoder_input_ids]
         if self.past_key_values:
             input_list.extend(self.past_key_values)
@@ -213,9 +225,10 @@ class WhisperDecoderHelper:
             decoder.config,
             batch_size=2,
             encode_sequence_length=3000,
-            past_decode_sequence_length=5 if isinstance(decoder, WhisperDecoder) else 0,
+            past_decode_sequence_length=6 if isinstance(decoder, WhisperDecoder) else 0,
             device=device,
             use_int32_inputs=use_int32_inputs,
+            model_impl=decoder.model_impl,
         )
         input_list = inputs.to_list()
 
@@ -319,7 +332,7 @@ class WhisperDecoderHelper:
 
     @staticmethod
     def verify_onnx(
-        model: Union[WhisperDecoder, WhisperDecoderInit],
+        model: WhisperDecoder | WhisperDecoderInit,
         ort_session: InferenceSession,
         device: torch.device,
         use_int32_inputs: bool,

@@ -5,7 +5,6 @@ import unittest
 
 import torch
 import torch._dynamo
-import torch.onnx._internal.exporter
 from torch import nn
 from torch.nn import functional as F
 from torch.onnx import ExportOptions
@@ -163,12 +162,12 @@ class TestTorchDynamoOrt(unittest.TestCase):
                 # ORT result.
                 tensors = run(optimized_elementwise_model, seed)
 
-                for tensor, baseline_tensor in zip(tensors, baseline_tensors):
+                for tensor, baseline_tensor in zip(tensors, baseline_tensors, strict=False):
                     torch.testing.assert_close(tensor, baseline_tensor)
 
-            assert (
-                len(cached.keys()) == 2
-            ), "Should only see two GraphModules so far. One for forward and the other one for backward."
+            assert len(cached.keys()) == 2, (
+                "Should only see two GraphModules so far. One for forward and the other one for backward."
+            )
             for value in cached.values():
                 assert len(value) == 1, (
                     "One GraphModule should only be mapped to one ONNX model since "
@@ -183,7 +182,7 @@ class TestTorchDynamoOrt(unittest.TestCase):
                 # ORT result.
                 tensors = run(optimized_elementwise_model, seed)
 
-                for tensor, baseline_tensor in zip(tensors, baseline_tensors):
+                for tensor, baseline_tensor in zip(tensors, baseline_tensors, strict=False):
                     torch.testing.assert_close(tensor, baseline_tensor)
 
             # 4 GraphModule's respectively for
@@ -216,7 +215,12 @@ class TestTorchDynamoOrt(unittest.TestCase):
             tensor_q = tensor_p.relu()
             return tensor_q
 
-        local_backend = make_local_backend(dynamic=True, use_aot_autograd=False)
+        # TODO: Set use_aot_autograd=False. In order to decompose torch
+        # function calls to aten ops, we need to set
+        # user_aot_autograd=True because there is no decomposition in DORT
+        # anymore. A long-term fix will be brining # decomposition pass back
+        # into DORT.
+        local_backend = make_local_backend(dynamic=True, use_aot_autograd=True)
         optimized_elementwise_model = torch.compile(elementwise_model, backend=local_backend, dynamic=True)
 
         def run(fun, list_x):
@@ -365,7 +369,7 @@ class TestTorchDynamoOrt(unittest.TestCase):
 
             print(f"MNIST loss: {loss} (pytorch), {loss_new} (ort).")
             torch.testing.assert_close(loss, loss_new, rtol=1e-2, atol=1e-5)
-            for grad, grad_new in zip(grads, grads_new):
+            for grad, grad_new in zip(grads, grads_new, strict=False):
                 torch.testing.assert_close(grad, grad_new)
 
         # Run 5 times because ORT runs have side effects and we want to make sure

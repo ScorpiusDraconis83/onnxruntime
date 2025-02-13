@@ -37,12 +37,12 @@ is a list of tensors, one from each model run
 import logging
 import math
 import time
+from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Sequence, Union
 
 import numpy
 import onnx
-from onnx import TensorProto, helper, numpy_helper
+from onnx import helper, numpy_helper
 
 import onnxruntime
 
@@ -62,9 +62,9 @@ _TENSOR_SAVE_POSTFIX_LEN = len(_TENSOR_SAVE_POSTFIX)
 
 
 def modify_model_output_intermediate_tensors(
-    input_model_path: Union[str, Path],
-    output_model_path: Union[str, Path],
-    op_types_for_saving: Optional[Sequence[str]] = None,
+    input_model_path: str | Path,
+    output_model_path: str | Path,
+    op_types_for_saving: Sequence[str] | None = None,
     save_as_external_data: bool = False,
 ) -> None:
     """Augment a given ONNX model to save node input/output tensors.
@@ -86,7 +86,7 @@ def modify_model_output_intermediate_tensors(
         op_types_for_saving = []
     saver = CalibraterBase(input_model_path, op_types_to_calibrate=op_types_for_saving)
     model_to_augment = saver.model
-    tensors, _ = saver.select_tensors_to_calibrate(model_to_augment)
+    tensors, value_infos = saver.select_tensors_to_calibrate(model_to_augment)
     reshape_shape_name = "LinearReshape_" + str(time.time())
     reshape_shape = numpy_helper.from_array(numpy.array([-1], dtype=numpy.int64), reshape_shape_name)
     model_to_augment.graph.initializer.append(reshape_shape)
@@ -100,7 +100,9 @@ def modify_model_output_intermediate_tensors(
             name=reshape_output,
         )
         model_to_augment.graph.node.append(reshape_node)
-        reshape_output_value_info = helper.make_tensor_value_info(reshape_output, TensorProto.FLOAT, [-1])
+        reshape_output_value_info = helper.make_tensor_value_info(
+            reshape_output, value_infos[tensor_name].type.tensor_type.elem_type, [-1]
+        )
         model_to_augment.graph.output.append(reshape_output_value_info)
 
     onnx.save(
@@ -114,8 +116,8 @@ def collect_activations(
     augmented_model: str,
     input_reader: CalibrationDataReader,
     session_options=None,
-    execution_providers: Optional[Sequence[str]] = None,
-) -> Dict[str, List[numpy.ndarray]]:
+    execution_providers: Sequence[str] | None = None,
+) -> dict[str, list[numpy.ndarray]]:
     """Run augmented model and collect activations tensors.
 
     Args:
@@ -152,7 +154,7 @@ def collect_activations(
     output_dict = {}
     output_info = inference_session.get_outputs()
     for batch in intermediate_outputs:
-        for output, output_data in zip(output_info, batch):
+        for output, output_data in zip(output_info, batch, strict=False):
             if output.name.endswith(_TENSOR_SAVE_POSTFIX):
                 output_name = output.name[:-_TENSOR_SAVE_POSTFIX_LEN]
                 output_dict.setdefault(output_name, []).append(output_data)
@@ -164,10 +166,10 @@ _POST_QDQ_POSTFIX1 = DEQUANT_OUTPUT_SUFFIX + "_1"
 
 
 def _add_pre_post_qdq_pair(
-    qdq_cmp: Dict[str, Dict[str, Sequence[numpy.ndarray]]],
+    qdq_cmp: dict[str, dict[str, Sequence[numpy.ndarray]]],
     activation_name: str,
-    pre_qdq_tensors: Optional[Sequence[numpy.ndarray]],
-    post_qdq_tensors: Optional[Sequence[numpy.ndarray]],
+    pre_qdq_tensors: Sequence[numpy.ndarray] | None,
+    post_qdq_tensors: Sequence[numpy.ndarray] | None,
 ) -> None:
     if post_qdq_tensors is not None and pre_qdq_tensors is not None:
         qdq_cmp[activation_name] = {}
@@ -176,9 +178,9 @@ def _add_pre_post_qdq_pair(
 
 
 def create_activation_matching(
-    qdq_activations: Dict[str, Sequence[numpy.ndarray]],
-    float_activations: Optional[Dict[str, Sequence[numpy.ndarray]]] = None,
-) -> Dict[str, Dict[str, Sequence[numpy.ndarray]]]:
+    qdq_activations: dict[str, Sequence[numpy.ndarray]],
+    float_activations: dict[str, Sequence[numpy.ndarray]] | None = None,
+) -> dict[str, dict[str, Sequence[numpy.ndarray]]]:
     """Comparing activation values to help debugging accuracy loss due to quantization.
 
     This functions takes saved activations from the QDQ model and (optionally) the
@@ -208,7 +210,7 @@ def create_activation_matching(
         ```
     """
 
-    qdq_cmp: Dict[str, Dict[str, Sequence[numpy.ndarray]]] = {}
+    qdq_cmp: dict[str, dict[str, Sequence[numpy.ndarray]]] = {}
     for tensor_name, tensors in qdq_activations.items():
         if tensor_name.endswith(QUANT_INPUT_SUFFIX):
             pre_name = tensor_name[: -len(QUANT_INPUT_SUFFIX)]
@@ -239,7 +241,7 @@ def create_activation_matching(
 
 def _run_dequantize_linear(
     weight_tensor: numpy.ndarray, weight_scale: numpy.ndarray, weight_zp: numpy.ndarray, channel_axis: int
-) -> Optional[numpy.ndarray]:
+) -> numpy.ndarray | None:
     assert weight_scale.shape == weight_zp.shape
     if weight_zp.size == 1:
         return (weight_tensor - weight_zp) * weight_scale
@@ -265,7 +267,7 @@ def _run_dequantize_linear(
     return dequantized_weights
 
 
-def create_weight_matching(float_model_path: str, qdq_model_path: str) -> Dict[str, Dict[str, numpy.ndarray]]:
+def create_weight_matching(float_model_path: str, qdq_model_path: str) -> dict[str, dict[str, numpy.ndarray]]:
     """Comparing weight values to help debugging accuracy loss due to quantization.
 
     This functions takes the float model and the qdq model, and provides a data structure for comparing
@@ -286,7 +288,7 @@ def create_weight_matching(float_model_path: str, qdq_model_path: str) -> Dict[s
     float_onnx_model = ONNXModel(load_model_with_shape_infer(Path(float_model_path)))
     qdq_onnx_model = ONNXModel(load_model_with_shape_infer(Path(qdq_model_path)))
 
-    matched_weights: Dict[str, Dict[str, numpy.ndarray]] = {}
+    matched_weights: dict[str, dict[str, numpy.ndarray]] = {}
     initializers = qdq_onnx_model.initializer()
     for node in qdq_onnx_model.nodes():
         if node.op_type != DEQUANT_OP_NAME:
@@ -312,6 +314,14 @@ def create_weight_matching(float_model_path: str, qdq_model_path: str) -> Dict[s
             weight_zp = numpy.zeros(weight_scale.shape, dtype=numpy.int32)
 
         # Perform dequantization:
+        if weight_scale.size == weight_zp.size == 1:
+            # Avoids the confusion between a scaler and a tensor of one element.
+            weight_scale = weight_scale.reshape(())
+            weight_zp = weight_zp.reshape(())
+        if weight_scale.shape != weight_zp.shape:
+            raise RuntimeError(
+                f"scale and zero_point must have the same shape but {weight_scale.shape} != {weight_zp.shape}"
+            )
         weight_quant = _run_dequantize_linear(weight_tensor, weight_scale, weight_zp, channel_axis=axis)
         weight_name = weight_name[: -len(TENSOR_NAME_QUANT_SUFFIX)]
         if weight_quant is None:
@@ -329,7 +339,7 @@ def create_weight_matching(float_model_path: str, qdq_model_path: str) -> Dict[s
 
 
 def compute_signal_to_quantization_noice_ratio(
-    x: Union[Sequence[numpy.ndarray], numpy.ndarray], y: Union[Sequence[numpy.ndarray], numpy.ndarray]
+    x: Sequence[numpy.ndarray] | numpy.ndarray, y: Sequence[numpy.ndarray] | numpy.ndarray
 ) -> float:
     if isinstance(x, numpy.ndarray):
         xlist = [x]
@@ -353,24 +363,24 @@ def compute_signal_to_quantization_noice_ratio(
 
 
 def compute_weight_error(
-    weights_match: Dict[str, Dict[str, numpy.ndarray]],
+    weights_match: dict[str, dict[str, numpy.ndarray]],
     err_func: Callable[[numpy.ndarray, numpy.ndarray], float] = compute_signal_to_quantization_noice_ratio,
-) -> Dict[str, float]:
-    result: Dict[str, float] = {}
+) -> dict[str, float]:
+    result: dict[str, float] = {}
     for weight_name, weight_match in weights_match.items():
         result[weight_name] = err_func(weight_match["float"], weight_match["dequantized"])
     return result
 
 
 def compute_activation_error(
-    activations_match: Dict[str, Dict[str, Sequence[numpy.ndarray]]],
+    activations_match: dict[str, dict[str, Sequence[numpy.ndarray]]],
     err_func: Callable[
         [Sequence[numpy.ndarray], Sequence[numpy.ndarray]], float
     ] = compute_signal_to_quantization_noice_ratio,
-) -> Dict[str, Dict[str, float]]:
-    result: Dict[str, Dict[str, float]] = {}
+) -> dict[str, dict[str, float]]:
+    result: dict[str, dict[str, float]] = {}
     for name, match in activations_match.items():
-        err_result: Dict[str, float] = {}
+        err_result: dict[str, float] = {}
         err_result["qdq_err"] = err_func(match["pre_qdq"], match["post_qdq"])
         float_activation = match["float"]
         if float_activation:

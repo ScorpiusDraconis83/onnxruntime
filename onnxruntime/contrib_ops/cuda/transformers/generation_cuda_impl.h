@@ -6,6 +6,8 @@
 #include <stdint.h>
 #include <cuda_fp16.h>
 #include <curand_kernel.h>
+#include <cstdio>
+#include "contrib_ops/cpu/transformers/generation_shared.h"
 
 namespace onnxruntime {
 namespace contrib {
@@ -49,6 +51,21 @@ struct HypothesisScore {
   const int32_t* hypothesis;
   int hypothesis_length;
   float score;
+
+#ifdef DEBUG_GENERATION
+  __device__ void Print() const {
+    printf("HypothesisScore (hypothesis_length=%d, score=%f) \n", hypothesis_length, score);
+    printf("  hypothesis:");
+    if (hypothesis_length > 0 && hypothesis != NULL) {
+      for (int i = 0; i < hypothesis_length; ++i) {
+        printf("%d ", hypothesis[i]);
+      }
+    } else {
+      printf("(empty)");
+    }
+    printf("\n");
+  }
+#endif
 };
 
 struct BeamHypotheses {
@@ -65,11 +82,28 @@ struct BeamHypotheses {
   __device__ bool CanImprove(float best_sum_logprobs, int current_length) const;
 
   // Output results
-  __device__ void Output(int top_k,                 // number of sequences to return
-                         int max_length,            // max sequence length
-                         int pad_token_id,          // pad token
-                         int32_t* sequences,        // buffer with pad token, shape (num_return_sequences, max_length)
-                         float* sequences_scores);  // buffer for sequence scores, with shape (num_return_sequences)
+  template <typename T>
+  __device__ void Output(int top_k,             // number of sequences to return
+                         int max_length,        // max sequence length
+                         int pad_token_id,      // pad token
+                         int32_t* sequences,    // buffer with pad token, shape (num_return_sequences, max_length)
+                         T* sequences_scores);  // buffer for sequence scores, with shape (num_return_sequences)
+
+#ifdef DEBUG_GENERATION
+  __device__ void Print() const {
+    printf("BeamHypotheses:\n");
+    printf("  beams_count: %d\n", beams_count_);
+    printf("  beams_used: %d\n", beams_used_);
+    printf("  length_penalty: %f\n", length_penalty_);
+    printf("  done: %s\n", done_ ? "true" : "false");
+
+    printf("  beams:\n");
+    for (int i = 0; i < beams_used_; ++i) {
+      printf("    Beam %d:\n", i + 1);
+      beams_[i].Print();
+    }
+  }
+#endif
 };
 
 struct BeamScorerState {
@@ -80,9 +114,23 @@ struct BeamScorerState {
   int pad_token_id_;
   int eos_token_id_;
   bool early_stopping_;
-  int not_done_count_;  // When zero, every batch entry is done (starts at batch_size_)
-
+  int not_done_count_;          // When zero, every batch entry is done (starts at batch_size_)
   int hypothesis_buffer_used_;  // Offset of available buffer, or length of used buffer.
+
+#ifdef DEBUG_GENERATION
+  __host__ __device__ void Print(bool is_cpu) const {
+    printf("BeamScorerState (cpu=%d) Dump:\n", is_cpu ? 1 : 0);
+    printf("  batch_size_: %d\n", batch_size_);
+    printf("  num_beams_: %d\n", num_beams_);
+    printf("  max_length_: %d\n", max_length_);
+    printf("  num_return_sequences_: %d\n", num_return_sequences_);
+    printf("  pad_token_id_: %d\n", pad_token_id_);
+    printf("  eos_token_id_: %d\n", eos_token_id_);
+    printf("  early_stopping_: %s\n", early_stopping_ ? "true" : "false");
+    printf("  not_done_count_: %d\n", not_done_count_);
+    printf("  hypothesis_buffer_used_: %d\n", hypothesis_buffer_used_);
+  }
+#endif
 };
 
 void LaunchInitializeBeamHypotheses(gsl::span<BeamHypotheses> beam_hyps, float length_penalty, gsl::span<HypothesisScore> beams, int num_beams, cudaStream_t stream);
@@ -110,6 +158,7 @@ void LaunchBeamSearchScorer_AppendNextTokenToSequences(BeamScorerState& state_cp
                                                        gsl::span<int32_t> next_beam_indices,
                                                        cudaStream_t stream);
 
+template <typename T>
 void LaunchBeamSearchScorer_Finalize(int batch_size,
                                      BeamScorerState& state,
                                      gsl::span<const int32_t> sequences,
@@ -117,8 +166,13 @@ void LaunchBeamSearchScorer_Finalize(int batch_size,
                                      gsl::span<BeamHypotheses> beam_hyps_,
                                      gsl::span<const float> final_beam_scores,
                                      gsl::span<int32_t> output,
-                                     gsl::span<float> sequence_scores,
+                                     gsl::span<T> sequence_scores,
                                      cudaStream_t stream);
+
+template <typename T>
+void LaunchBeamSearchScoreCopy(gsl::span<const float> final_scores,
+                               gsl::span<T> output_scores,
+                               cudaStream_t stream);
 
 void LaunchNextTokenKernel(const int64_t* next_token_indices,
                            int32_t* next_indices,

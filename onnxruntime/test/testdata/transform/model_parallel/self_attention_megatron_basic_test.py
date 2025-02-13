@@ -1,13 +1,13 @@
 import numpy as np
 import onnx
-from onnx import GraphProto, OperatorSetIdProto, TensorProto, helper, numpy_helper  # noqa: F401
+from onnx import OperatorSetIdProto, TensorProto, helper, numpy_helper
 
 hidden_size = 4
 attention_head = 2
 hidden_per_attention = 2
 
 # Self-attention.
-# Handle self-attension.
+# Handle self-attention.
 # MatMul->Add->Split->Reshape->Transpose->MatMul->Div->Mul->Sub->Softmax->Dropout->MatMul->Transpose->Reshape->MatMul->Add
 #                  |->Reshape->Transpose->|                                        |
 #                  |->Reshape->Transpose------------------------------------------>|

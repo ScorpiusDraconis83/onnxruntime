@@ -1,10 +1,13 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
 
-import {env} from './env-impl.js';
+import { env } from './env-impl.js';
 
+/**
+ * @ignore
+ */
 export const TRACE = (deviceType: string, label: string) => {
-  if (!env.wasm.trace) {
+  if (typeof env.trace === 'undefined' ? !env.wasm.trace : !env.trace) {
     return;
   }
   // eslint-disable-next-line no-console
@@ -29,15 +32,21 @@ const TRACE_FUNC = (msg: string, extraMsg?: string) => {
   }
 };
 
+/**
+ * @ignore
+ */
 export const TRACE_FUNC_BEGIN = (extraMsg?: string) => {
-  if (!env.wasm.trace) {
+  if (typeof env.trace === 'undefined' ? !env.wasm.trace : !env.trace) {
     return;
   }
   TRACE_FUNC('BEGIN', extraMsg);
 };
 
+/**
+ * @ignore
+ */
 export const TRACE_FUNC_END = (extraMsg?: string) => {
-  if (!env.wasm.trace) {
+  if (typeof env.trace === 'undefined' ? !env.wasm.trace : !env.trace) {
     return;
   }
   TRACE_FUNC('END', extraMsg);

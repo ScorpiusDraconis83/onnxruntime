@@ -4,12 +4,11 @@
 #include <string>
 #include <vector>
 
+#include "core/providers/qnn/ort_api.h"
+#include "core/providers/qnn/builder/opbuilder/base_op_builder.h"
 #include "core/providers/qnn/builder/qnn_model_wrapper.h"
 #include "core/providers/qnn/builder/op_builder_factory.h"
 #include "core/providers/qnn/builder/qnn_utils.h"
-#include "core/common/safeint.h"
-
-#include "base_op_builder.h"
 
 namespace onnxruntime {
 namespace qnn {
@@ -96,13 +95,13 @@ Status TransposeOpBuilder::ProcessAttributesAndOutputs(QnnModelWrapper& qnn_mode
   QnnTensorWrapper output_tensorwrapper(output_name,
                                         tensor_type,
                                         input_tensor_wrapper.GetTensorDataType(),
-                                        GetQnnTensorQParams(input_tensor_wrapper.GetQnnTensor()),
+                                        input_tensor_wrapper.GetQnnQuantParams().Copy(),
                                         std::move(output_shape));
 
   ORT_RETURN_IF_NOT(qnn_model_wrapper.AddTensorWrapper(std::move(output_tensorwrapper)), "Failed to add tensor.");
 
   output_names.push_back(output_name);
-  ORT_RETURN_IF_NOT(qnn_model_wrapper.CreateQnnNode(GetNodeName(node_unit),
+  ORT_RETURN_IF_NOT(qnn_model_wrapper.CreateQnnNode(utils::GetNodeName(node_unit),
                                                     QNN_OP_PACKAGE_NAME_QTI_AISW,
                                                     QNN_OP_TRANSPOSE,
                                                     std::move(input_names),

@@ -12,10 +12,10 @@ import torch
 import wget
 from sklearn.model_selection import train_test_split
 from torch.utils.data import DataLoader, RandomSampler, SequentialSampler, TensorDataset
-from transformers import BertConfig  # noqa: F401
 from transformers import (
     AdamW,
     AutoConfig,
+    BertConfig,  # noqa: F401
     BertForSequenceClassification,
     BertTokenizer,
     get_linear_schedule_with_warmup,
@@ -376,7 +376,7 @@ def main():
     # Device (CPU vs CUDA)
     if torch.cuda.is_available() and not args.no_cuda:
         device = torch.device("cuda")
-        print("There are %d GPU(s) available." % torch.cuda.device_count())
+        print(f"There are {torch.cuda.device_count()} GPU(s) available.")
         print("We will use the GPU:", torch.cuda.get_device_name(0))
     else:
         print("No GPU available, using the CPU instead.")
@@ -385,7 +385,7 @@ def main():
     # Set log level
     numeric_level = getattr(logging, args.log_level.upper(), None)
     if not isinstance(numeric_level, int):
-        raise ValueError("Invalid log level: %s" % args.log_level)
+        raise ValueError(f"Invalid log level: {args.log_level}")
     logging.basicConfig(level=numeric_level)
 
     # 2. Dataloader
@@ -429,7 +429,9 @@ def main():
 
     # Create the learning rate scheduler.
     scheduler = get_linear_schedule_with_warmup(
-        optimizer, num_warmup_steps=0, num_training_steps=total_steps  # Default value in run_glue.py
+        optimizer,
+        num_warmup_steps=0,
+        num_training_steps=total_steps,  # Default value in run_glue.py
     )
     # Seed
     random.seed(args.seed)
@@ -441,7 +443,7 @@ def main():
 
     # 4. Train loop (fine-tune)
     total_training_time, total_test_time, epoch_0_training, validation_accuracy = 0, 0, 0, 0
-    for epoch_i in range(0, args.epochs):
+    for epoch_i in range(args.epochs):
         total_training_time += train(model, optimizer, scheduler, train_dataloader, epoch_i, device, args)
         if not args.pytorch_only and epoch_i == 0:
             epoch_0_training = total_training_time

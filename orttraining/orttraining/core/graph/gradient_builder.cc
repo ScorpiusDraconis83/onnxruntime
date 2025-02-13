@@ -1112,6 +1112,7 @@ IMPLEMENT_GRADIENT_BUILDER(GetReduceMeanGradient) {
 
   ArgDef grad = GO(0);
   if (!keepdims) {
+    size_t numInputs = GetSrcNodeInputSize();
     if (attributes.find("axes") != attributes.end()) {
       std::vector<int64_t> axes_values = RetrieveValues<int64_t>(attributes.at("axes"));
       grad = IA("Unqueezed_Grad");
@@ -1122,6 +1123,9 @@ IMPLEMENT_GRADIENT_BUILDER(GetReduceMeanGradient) {
         result.push_back(axes_values_node);
         result.push_back(NodeDef(OpDef{"Unsqueeze", kOnnxDomain, 13}, {GO(0), axes_values_node.output_args[0]}, {grad}));
       }
+    } else if (numInputs == 2) {  // optional input 'axes' is available as input I(1)
+      grad = IA("Unqueezed_Grad");
+      result.push_back(NodeDef("Unsqueeze", {GO(0), I(1)}, {grad}));
     }
   }
 
@@ -1152,12 +1156,21 @@ IMPLEMENT_GRADIENT_BUILDER(GetReduceLogSumExpGradient) {
   }
 
   ArgDef grad = GO(0);
-  if (!keepdims && attributes.find("axes") != attributes.end()) {
-    std::vector<int64_t> axes_values = RetrieveValues<int64_t>(attributes.at("axes"));
-    grad = IA("Unsqueezed_Grad");
-    result.push_back(NodeDef("Unsqueeze", {GO(0)}, {grad}, {MakeAttribute("axes", axes_values)}));
+  if (!keepdims) {
+    size_t numInputs = GetSrcNodeInputSize();
+    if (attributes.find("axes") != attributes.end()) {
+      std::vector<int64_t> axes_values = RetrieveValues<int64_t>(attributes.at("axes"));
+      grad = IA("Unsqueezed_Grad");
 
-    result.push_back(NodeDef("Unsqueeze", {O(0)}, {IA("Unsqueezed_Output")}, {MakeAttribute("axes", axes_values)}));
+      result.push_back(NodeDef("Unsqueeze", {GO(0)}, {grad}, {MakeAttribute("axes", axes_values)}));
+
+      result.push_back(NodeDef("Unsqueeze", {O(0)}, {IA("Unsqueezed_Output")}, {MakeAttribute("axes", axes_values)}));
+    } else if (numInputs == 2) {  // optional input 'axes' is available as input I(1)
+      grad = IA("Unsqueezed_Grad");
+      result.push_back(NodeDef("Unsqueeze", {GO(0), I(1)}, {grad}));
+
+      result.push_back(NodeDef("Unsqueeze", {O(0), I(1)}, {IA("Unsqueezed_Output")}));
+    }
     result.push_back(NodeDef("Sub", {I(0), IA("Unsqueezed_Output")}, {IA("Self_Sub_Result")}));
   } else {
     result.push_back(NodeDef("Sub", {I(0), O(0)}, {IA("Self_Sub_Result")}));
@@ -1188,11 +1201,17 @@ IMPLEMENT_GRADIENT_BUILDER(GetReduceL2Gradient) {
   ArgDef scaled_dy_arg_def = IA("Masked_Scaled_dY");
   result.emplace_back(NodeDef("Where", {IA("Masked_Y"), ZERO, IA("Scaled_dY")}, {scaled_dy_arg_def}));
 
-  if (!keepdims && attributes.find("axes") != attributes.end()) {
-    std::vector<int64_t> axes_values = RetrieveValues<int64_t>(attributes.at("axes"));
+  if (!keepdims) {
+    size_t numInputs = GetSrcNodeInputSize();
     scaled_dy_arg_def = IA("Unsqueezed_Masked_Scaled_dY");
-    result.emplace_back(
-        NodeDef("Unsqueeze", {IA("Masked_Scaled_dY")}, {scaled_dy_arg_def}, {MakeAttribute("axes", axes_values)}));
+    if (attributes.find("axes") != attributes.end()) {
+      std::vector<int64_t> axes_values = RetrieveValues<int64_t>(attributes.at("axes"));
+      result.emplace_back(
+          NodeDef("Unsqueeze", {IA("Masked_Scaled_dY")}, {scaled_dy_arg_def}, {MakeAttribute("axes", axes_values)}));
+    } else if (numInputs == 2) {  // optional input 'axes' is available as input I(1)
+      result.emplace_back(
+          NodeDef("Unsqueeze", {IA("Masked_Scaled_dY"), I(1)}, {scaled_dy_arg_def}));
+    }
   }
 
   result.emplace_back(NodeDef("Mul", {I(0), scaled_dy_arg_def}, {GI(0)}));
@@ -1775,7 +1794,20 @@ IMPLEMENT_GRADIENT_BUILDER(GetExternalGradient) {
     }
 
     std::vector<ArgDef> output_args;
-    for (const auto& output : node_def.outputs) {
+    for (size_t output_index = 0; output_index < node_def.outputs.size(); ++output_index) {
+      // If the input is not used in the forward computation, we don't need it for gradient computation
+      // Required for ORTMODULE_ATEN_SDPA_FALLBACK
+      if (static_cast<int>(output_index) >= GetSrcNodeInputSize()) {
+        continue;
+      }
+
+      if (!IsGradientRequiredForSrcNodeInput(static_cast<int>(output_index))) {
+        output_args.emplace_back(ArgDef());
+        continue;
+      }
+
+      const auto& output = node_def.outputs[output_index];
+
       if (output.find("GI(") == 0) {
         size_t index = static_cast<size_t>(std::stoi(output.substr(3, output.length() - 4)));
         output_args.emplace_back(GI(index));
@@ -2193,6 +2225,96 @@ IMPLEMENT_GRADIENT_BUILDER(GetResizeGradient) {
               {GO(0), I(0), I(1), I(2)},
               {GI(0)},
               SrcNodeAttributes())};
+}
+
+IMPLEMENT_GRADIENT_BUILDER(GetAtanGradient) {
+  // dl/dx = dl/dy * (1/(1+x^2))
+  NodeDef one_const_node = OneConstantNode(IElemType(0));
+  ArgDef one = one_const_node.output_args[0];
+  std::vector<NodeDef> result;
+  result.push_back(one_const_node);
+  result.push_back(NodeDef("Mul", {I(0), I(0)}, {IA("Square_I0")}));
+  result.push_back(NodeDef("Add", {IA("Square_I0"), one}, {IA("One_Plus_Square_I0")}));
+  result.push_back(NodeDef("Div", {GO(0), IA("One_Plus_Square_I0")}, {GI(0)}));
+  return result;
+}
+
+IMPLEMENT_GRADIENT_BUILDER(GetGlobalMaxPoolGradient) {
+  // For GlobalMaxPool's gradient, a binary mask flags max elements.
+  // We multiply that mask by the incoming gradient, passing gradients only to maxima.
+  std::vector<NodeDef> result;
+  result.push_back(NodeDef("Shape", {I(0)}, {IA("X_shape")}));
+  result.push_back(NodeDef("Expand", {O(0), IA("X_shape")}, {IA("expanded_Y")}));
+  result.push_back(NodeDef("Equal", {I(0), IA("expanded_Y")}, {IA("mask")}));
+  result.push_back(NodeDef("Cast",
+                           {IA("mask")},
+                           {IA("mask_cast")},
+                           {MakeAttribute("to", static_cast<int64_t>(IElemType(0)))}));
+
+  result.push_back(NodeDef("Expand", {GO(0), IA("X_shape")}, {IA("expanded_dY")}));
+  result.push_back(NodeDef("Mul", {IA("mask_cast"), IA("expanded_dY")}, {GI(0)}));
+  return result;
+}
+
+IMPLEMENT_GRADIENT_BUILDER(GetReduceMaxGradient) {
+  std::vector<NodeDef> result;
+  auto attributes = SrcNodeAttributes();
+  bool keepdims = true;
+
+  // Check the "keepdims" attribute
+  if (attributes.find("keepdims") != attributes.end() &&
+      attributes.at("keepdims").has_i()) {
+    keepdims = static_cast<bool>(attributes.at("keepdims").i());
+  }
+
+  ArgDef grad = GO(0);
+  ArgDef reduced_output = O(0);
+
+  if (!keepdims) {
+    size_t numInputs = GetSrcNodeInputSize();
+    ArgDef unsqueeze_axes_arg;
+    bool axes_provided = false;
+
+    // Handle "axes" as attribute or input
+    if (attributes.find("axes") != attributes.end()) {
+      axes_provided = true;
+      std::vector<int64_t> axes_values = RetrieveValues<int64_t>(attributes.at("axes"));
+      if (SrcNodeOpsetVersion() >= 13) {
+        NodeDef axes_values_node = ConstantVectorNode(axes_values, Name("axes_values"));
+        result.push_back(axes_values_node);
+        unsqueeze_axes_arg = axes_values_node.output_args[0];
+      }
+    } else if (numInputs == 2) {
+      axes_provided = true;
+      unsqueeze_axes_arg = I(1);
+    }
+
+    if (axes_provided) {
+      grad = IA("Unsqueezed_Grad");
+      reduced_output = IA("Unsqueezed_Output");
+      if (SrcNodeOpsetVersion() < 13 && attributes.find("axes") != attributes.end()) {
+        std::vector<int64_t> axes_values = RetrieveValues<int64_t>(attributes.at("axes"));
+        result.push_back(NodeDef("Unsqueeze", {GO(0)}, {grad}, {MakeAttribute("axes", axes_values)}));
+        result.push_back(NodeDef("Unsqueeze", {O(0)}, {reduced_output}, {MakeAttribute("axes", axes_values)}));
+      } else {
+        result.push_back(NodeDef(OpDef{"Unsqueeze", kOnnxDomain, 13}, {GO(0), unsqueeze_axes_arg}, {grad}));
+        result.push_back(NodeDef(OpDef{"Unsqueeze", kOnnxDomain, 13}, {O(0), unsqueeze_axes_arg}, {reduced_output}));
+      }
+    }
+  }
+
+  // Step 1: Recreate the boolean mask tensor indicating max positions
+  result.push_back(NodeDef("Shape", {I(0)}, {IA("Shaped_X")}));
+  result.push_back(NodeDef("Expand", {reduced_output, IA("Shaped_X")}, {IA("Expanded_Output")}));
+  result.push_back(NodeDef("Equal", {I(0), IA("Expanded_Output")}, {IA("Mask")}));
+  // Step 2: Convert the boolean mask to a float tensor (0.0 and 1.0)
+  result.push_back(NodeDef("Cast", {IA("Mask")}, {IA("Mask_Float")}, {MakeAttribute("to", static_cast<int64_t>(OElemType(0)))}));
+  // Step 3: Multiply the input gradient by the mask
+  result.push_back(NodeDef("Mul", {grad, IA("Mask_Float")}, {IA("Masked_Grad")}));
+  // Step 4: Ensure the output gradient has the same shape as the input
+  result.push_back(NodeDef("Expand", {IA("Masked_Grad"), IA("Shaped_X")}, {GI(0)}));
+
+  return result;
 }
 
 }  // namespace training

@@ -1,7 +1,14 @@
 # Contents
  - [LLaMA-2](#llama-2)
+   - [Prerequisites](#prerequisites)
    - [Exporting LLaMA-2](#exporting-llama-2)
+   - [Examples of Exporting LLaMA-2](#examples-of-exporting-llama-2)
+   - [Parity Checking LLaMA-2](#parity-checking-llama-2)
    - [Benchmarking LLaMA-2](#benchmark-llama-2)
+     - [Variants](#variants)
+     - [Benchmark All](#benchmark-all)
+     - [Benchmark E2E](#benchmark-e2e)
+   - [E2E Inference with LLaMA-2](#e2e-inference-with-llama-2)
  - [Mistral](#mistral)
    - [Exporting Mistral](#exporting-mistral)
    - [Optimizing and Quantizing Mistral](#optimizing-and-quantizing-mistral)
@@ -20,8 +27,6 @@ Please note the package versions needed for using LLaMA-2 in the `requirements.t
   - Note that `torch` with CUDA enabled is not installed automatically. This is because `torch` should be installed with the CUDA version used on your machine. Please visit [the PyTorch website](https://pytorch.org/get-started/locally/) to download the `torch` version that is used with the CUDA version installed on your machine and satisfies the requirement listed in the file.
 - `requirements-quant.txt`
   - For running the SmoothQuant algorithm using [Intel's Neural Compressor](https://github.com/intel/neural-compressor)
-- `requirements-70b-model.txt`
-  - For running the LLaMA-2 70B model on multiple GPUs
 - `requirements.txt`
   - Package versions needed in each of the above files
 
@@ -41,23 +46,6 @@ $ python3 -m onnxruntime.transformers.models.llama.convert_to_onnx -m meta-llama
 ```
 
 To make this option compatible with [Hugging Face's Optimum](https://github.com/huggingface/optimum), you will need to create `config.json` and `generation_config.json` for your model and store them in the same directory as your ONNX models. For example, you can find those JSON files for LLaMA-2 7B on Hugging Face [here](https://huggingface.co/meta-llama/Llama-2-7b-hf).
-
-As indicated in `requirements.txt`, you will also need to install Optimum from source. Once installed, you will need to modify `ORTModelForCausalLM.forward` in `optimum/optimum/onnxruntime/modeling_decoder.py` as follows:
-
-```
-# Before
-if self.use_cache:
-    if past_key_values is not None:
-        input_ids = input_ids[:, -1:]
-        # Flatten the past_key_values (no need to flatten for models using multi-query attn)
-
-
-# After
-if self.use_cache:
-    if past_key_values is not None:
-        input_ids = input_ids[:, -1:] if past_key_values[0][0].shape[2] != 0 else input_ids
-        # Flatten the past_key_values (no need to flatten for models using multi-query attn)
-```
 
 ### Option 2: from [Microsoft's custom export](https://github.com/microsoft/Llama-2-Onnx)
 
@@ -109,7 +97,7 @@ $ python3 -m models.llama.convert_to_onnx -m meta-llama/Llama-2-7b-hf --input ./
 $ python3 -m onnxruntime.transformers.models.llama.convert_to_onnx -m meta-llama/Llama-2-7b-hf --input ./Llama-2-7b-hf --output ./llama2-7b
 ```
 
-Export for FP32 CUDA
+Export for FP32 CUDA (with MultiHeadAttention)
 ```
 # From source:
 $ python3 -m models.llama.convert_to_onnx -m meta-llama/Llama-2-7b-hf --output llama2-7b-fp32-gpu --precision fp32 --execution_provider cuda
@@ -118,13 +106,13 @@ $ python3 -m models.llama.convert_to_onnx -m meta-llama/Llama-2-7b-hf --output l
 $ python3 -m onnxruntime.transformers.models.llama.convert_to_onnx -m meta-llama/Llama-2-7b-hf --output llama2-7b-fp32-gpu --precision fp32 --execution_provider cuda
 ```
 
-Export for FP32 CPU
+Export for FP32 CPU (with GroupQueryAttention)
 ```
 # From source:
-$ python3 -m models.llama.convert_to_onnx -m meta-llama/Llama-2-7b-hf --output llama2-7b-fp32-cpu --precision fp32 --execution_provider cpu
+$ python3 -m models.llama.convert_to_onnx -m meta-llama/Llama-2-7b-hf --output llama2-7b-fp32-cpu --precision fp32 --execution_provider cpu --use_gqa
 
 # From wheel:
-$ python3 -m onnxruntime.transformers.models.llama.convert_to_onnx -m meta-llama/Llama-2-7b-hf --output llama2-7b-fp32-cpu --precision fp32 --execution_provider cpu
+$ python3 -m onnxruntime.transformers.models.llama.convert_to_onnx -m meta-llama/Llama-2-7b-hf --output llama2-7b-fp32-cpu --precision fp32 --execution_provider cpu --use_gqa
 ```
 
 Export for FP16 CUDA (with MultiHeadAttention)
@@ -145,7 +133,7 @@ $ python3 -m models.llama.convert_to_onnx -m meta-llama/Llama-2-7b-hf --output l
 $ python3 -m onnxruntime.transformers.models.llama.convert_to_onnx -m meta-llama/Llama-2-7b-hf --output llama2-7b-fp16 --precision fp16 --execution_provider cuda --use_gqa
 ```
 
-Note: GroupQueryAttention currently works with the FP16 CUDA and INT4 CUDA models, and it can provide faster inference than MultiHeadAttention, especially for large sequence lengths (e.g. 1024 or larger). For the best performance, you should pre-allocate the KV cache buffers to have size `(batch_size, num_heads, max_sequence_length, head_size)` so that the past KV and present KV caches share the same memory. You also need to bind them with ONNX Runtime's [IO binding](https://onnxruntime.ai/docs/api/python/api_summary.html#iobinding).
+Note: GroupQueryAttention can provide faster inference than MultiHeadAttention, especially for large sequence lengths (e.g. 1024 or larger). For the best performance, you should pre-allocate the KV cache buffers to have size `(batch_size, num_heads, max_sequence_length, head_size)` so that the past KV and present KV caches share the same memory. You also need to bind them with ONNX Runtime's [IO binding](https://onnxruntime.ai/docs/api/python/api_summary.html#iobinding).
 
 Here is an example of how you can bind directly to `torch.tensor` objects:
 ```
@@ -222,28 +210,63 @@ $ python3 -m models.llama.convert_to_onnx -m meta-llama/Llama-2-7b-hf --output l
 $ python3 -m onnxruntime.transformers.models.llama.convert_to_onnx -m meta-llama/Llama-2-7b-hf --output llama2-7b-int4-gpu --precision int4 --quantization_method blockwise --execution_provider cuda --use_gqa
 ```
 
-Note: See the FP16 CUDA notes about GroupQueryAttention. The `--use_gqa` flag is optional.
-
 Export for INT4 CPU
 ```
 # From source:
-$ python3 -m models.llama.convert_to_onnx -m meta-llama/Llama-2-7b-hf --output llama2-7b-int4-cpu --precision int4 --quantization_method blockwise --execution_provider cpu
+$ python3 -m models.llama.convert_to_onnx -m meta-llama/Llama-2-7b-hf --output llama2-7b-int4-cpu --precision int4 --quantization_method blockwise --execution_provider cpu --use_gqa
 
 # From wheel:
-$ python3 -m onnxruntime.transformers.models.llama.convert_to_onnx -m meta-llama/Llama-2-7b-hf --output llama2-7b-int4-cpu --precision int4 --quantization_method blockwise --execution_provider cpu
+$ python3 -m onnxruntime.transformers.models.llama.convert_to_onnx -m meta-llama/Llama-2-7b-hf --output llama2-7b-int4-cpu --precision int4 --quantization_method blockwise --execution_provider cpu --use_gqa
 ```
 
-Export LLaMA-2 70B sharded model into 4 partitions
+
+## Parity Checking LLaMA-2
+
+Here are some examples of how you can use the parity checker to verify your LLaMA-2 ONNX model.
+
+1. Merged ONNX model, FP32 CPU
 ```
-# From source:
-# 1. Install necessary packages from requirements-70b-model.txt
-$ pip install -r requirements-70b-model.txt
+CUDA_VISIBLE_DEVICES=0 python3 -m models.llama.llama_parity \
+    --model_name meta-llama/Llama-2-7b-hf \
+    --onnx_model_path ./llama2-7b/rank_0_Llama-2-7b-hf_decoder_merged_model_fp32.onnx \
+    --merged \
+    --execution_provider cpu \
+    --precision fp32 \
+    --cache_dir ./model_cache \
+```
 
-# 2. Build ONNX Runtime from source with NCCL enabled. Here is a sample command:
-$ ./build.sh --config Release --use_cuda --cuda_home /usr/local/cuda-12.2 --cudnn_home /usr/local/cuda-12.2 --build_wheel --cuda_version=12.2 --parallel --skip_tests --enable_nccl --nccl_home /usr/local/cuda-12.2 --use_mpi --mpi_home=/usr/lib/x86_64-linux-gnu/
+2. Merged ONNX model, FP32 CUDA
+```
+CUDA_VISIBLE_DEVICES=0 python3 -m models.llama.llama_parity \
+    --model_name meta-llama/Llama-2-7b-hf \
+    --onnx_model_path ./llama2-7b/rank_0_Llama-2-7b-hf_decoder_merged_model_fp32.onnx \
+    --merged \
+    --execution_provider cuda \
+    --precision fp32 \
+    --cache_dir ./model_cache \
+```
 
-# 3. Shard and export the LLaMA-2 70B model. With FP16, you will need at least 140GB of GPU memory to load the model. Therefore, you will need at least 4 40GB A100 GPUs or 2 80GB A100 GPUs to shard the PyTorch model and export each shard to ONNX. Here is an example command:
-$ CUDA_VISIBLE_DEVICES=0,1,2,3 bash convert_70b_model.sh 4 -m meta-llama/Llama-2-70b-hf --output llama2-70b-distributed --precision fp16 --execution_provider cuda --use_gqa
+3. Merged ONNX model, FP16 CUDA
+```
+CUDA_VISIBLE_DEVICES=0 python3 -m models.llama.llama_parity \
+    --model_name meta-llama/Llama-2-7b-hf \
+    --onnx_model_path ./llama2-7b/rank_0_Llama-2-7b-hf_decoder_merged_model_fp32.onnx \
+    --merged \
+    --execution_provider cuda \
+    --precision fp16 \
+    --cache_dir ./model_cache \
+```
+
+4. Merged ONNX model, FP16 CUDA with GroupQueryAttention + Buffer Sharing Enabled
+```
+CUDA_VISIBLE_DEVICES=0 python3 -m models.llama.llama_parity \
+    --model_name meta-llama/Llama-2-7b-hf \
+    --onnx_model_path ./llama2-7b/rank_0_Llama-2-7b-hf_decoder_merged_model_fp32.onnx \
+    --merged \
+    --use_buffer_share \
+    --execution_provider cuda \
+    --precision fp16 \
+    --cache_dir ./model_cache \
 ```
 
 ## Benchmark LLaMA-2
@@ -254,9 +277,10 @@ Here are some examples of how you can benchmark LLaMA-2.
 
 1. PyTorch without `torch.compile`, FP32
 ```
-python3 -m models.llama.benchmark \
+CUDA_VISIBLE_DEVICES=0 python3 -m models.llama.benchmark \
     --benchmark-type hf-pt-eager \
     --model-name meta-llama/Llama-2-7b-hf \
+    --cache-dir ./model_cache \
     --precision fp32 \
     --batch-sizes "1 2" \
     --sequence-lengths "8 16" \
@@ -266,9 +290,10 @@ python3 -m models.llama.benchmark \
 
 2. PyTorch with `torch.compile`, FP16
 ```
-python3 -m models.llama.benchmark \
+CUDA_VISIBLE_DEVICES=0 python3 -m models.llama.benchmark \
     --benchmark-type hf-pt-compile \
     --model-name meta-llama/Llama-2-7b-hf \
+    --cache-dir ./model_cache \
     --precision fp16 \
     --batch-sizes "1 2" \
     --sequence-lengths "8 16" \
@@ -278,10 +303,11 @@ python3 -m models.llama.benchmark \
 
 3. Optimum + ONNX Runtime, FP32, export via Optimum or convert_to_onnx
 ```
-python3 -m models.llama.benchmark \
+CUDA_VISIBLE_DEVICES=0 python3 -m models.llama.benchmark \
     --benchmark-type hf-ort \
     --hf-ort-dir-path ./Llama-2-7b-hf-onnx/ \
     --model-name meta-llama/Llama-2-7b-hf \
+    --cache-dir ./model_cache \
     --precision fp32 \
     --batch-sizes "1 2" \
     --sequence-lengths "8 16" \
@@ -291,10 +317,11 @@ python3 -m models.llama.benchmark \
 
 4. Optimum + ONNX Runtime, FP16, export via Optimum or convert_to_onnx
 ```
-python3 -m models.llama.benchmark \
+CUDA_VISIBLE_DEVICES=0 python3 -m models.llama.benchmark \
     --benchmark-type hf-ort \
     --hf-ort-dir-path ./Llama-2-7b-hf-onnx/ \
     --model-name meta-llama/Llama-2-7b-hf \
+    --cache-dir ./model_cache \
     --precision fp16 \
     --batch-sizes "1 2" \
     --sequence-lengths "8 16" \
@@ -304,10 +331,11 @@ python3 -m models.llama.benchmark \
 
 5. ONNX Runtime, FP32, Microsoft custom export
 ```
-python3 -m models.llama.benchmark \
+CUDA_VISIBLE_DEVICES=0 python3 -m models.llama.benchmark \
     --benchmark-type ort-msft \
     --ort-model-path ./llama-2-onnx/7B_float32/ONNX/LlamaV2_7B_float32.onnx \
     --model-name meta-llama/Llama-2-7b-hf \
+    --cache-dir ./model_cache \
     --precision fp32 \
     --batch-sizes "1 2" \
     --sequence-lengths "8 16" \
@@ -316,10 +344,11 @@ python3 -m models.llama.benchmark \
 
 6. ONNX Runtime, FP16, Microsoft custom export
 ```
-python3 -m models.llama.benchmark \
+CUDA_VISIBLE_DEVICES=0 python3 -m models.llama.benchmark \
     --benchmark-type ort-msft \
     --ort-model-path ./llama-2-onnx/7B_float16/ONNX/LlamaV2_7B_float16.onnx \
     --model-name meta-llama/Llama-2-7b-hf \
+    --cache-dir ./model_cache \
     --precision fp16 \
     --batch-sizes "1 2" \
     --sequence-lengths "8 16" \
@@ -332,6 +361,7 @@ CUDA_VISIBLE_DEVICES=1 python3 -m models.llama.benchmark \
     --benchmark-type ort-convert-to-onnx \
     --ort-model-path ./llama2-7b/rank_0_Llama-2-7b-hf_decoder_merged_model_fp32.onnx \
     --model-name meta-llama/Llama-2-7b-hf \
+    --cache-dir ./model_cache \
     --precision fp32 \
     --batch-sizes "1 2" \
     --sequence-lengths "8 16" \
@@ -344,36 +374,27 @@ CUDA_VISIBLE_DEVICES=4 python3 -m models.llama.benchmark \
     --benchmark-type ort-convert-to-onnx \
     --ort-model-path ./llama2-7b/rank_0_Llama-2-7b-hf_decoder_merged_model_fp16.onnx \
     --model-name meta-llama/Llama-2-7b-hf \
+    --cache-dir ./model_cache \
     --precision fp16 \
     --batch-sizes "1 2" \
     --sequence-lengths "8 16" \
     --device cuda
 ```
 
-9. ONNX Runtime, FP16, convert_to_onnx, LLaMA-2 70B shard to 4 GPUs
-```
-CUDA_VISIBLE_DEVICES=4,5,6,7 bash benchmark_70b_model.sh 4 \
-    --benchmark-type ort-convert-to-onnx \
-    --ort-model-path ./llama2-70b-dis/rank_{}_Llama-2-70b-hf_decoder_merged_model_fp16.onnx \
-    --model-name meta-llama/Llama-2-70b-hf \
-    --precision fp16 \
-    --device cuda \
-    --warmup-runs 5 \
-    --num-runs 100
-```
 
 You can profile a variant by adding the `--profile` flag and providing one batch size and sequence length combination.
 
 ### Benchmark All
 You can use `benchmark_all.py` to benchmark across various options and automatically store the results in a CSV file. Here is an example.
 ```
-python3 -m models.llama.benchmark_all \
+CUDA_VISIBLE_DEVICES=0 python3 -m models.llama.benchmark_all \
     --hf-pt-eager \
     --hf-pt-compile \
     --hf-ort-dir-path ./llama2-7b-fp16/ \
     --ort-convert-to-onnx-model-path ./llama2-7b-fp16/Llama-2-7b-hf_decoder_merged_model_fp16.onnx \
     --ort-msft-model-path ./llama-2-onnx/7B_float16/ONNX/LlamaV2_7B_float16.onnx \
     --model-name meta-llama/Llama-2-7b-hf \
+    --cache-dir ./model_cache \
     --precision fp16 \
     --batch-sizes "1 2" \
     --sequence-lengths "8 16" \
@@ -382,6 +403,72 @@ python3 -m models.llama.benchmark_all \
     --num-runs 1000 \
     --timeout 60  # number of minutes before moving to the next benchmark
 ```
+
+### Benchmark E2E
+You can use `benchmark_e2e.py` to benchmark the full end-to-end scenario and automatically store the results in a CSV file. This tool uses `argmax` for sampling to standardize the benchmarking process.
+
+1. PyTorch without `torch.compile`, FP32
+```
+CUDA_VISIBLE_DEVICES=0 python3 -m models.llama.benchmark_e2e \
+    --benchmark-type pt-eager \
+    --model-name meta-llama/Llama-2-7b-hf \
+    --cache-dir ./model_cache \
+    --prompts-file ./models/llama/prompts.json \
+    --precision fp32 \
+    --batch-sizes "1 2" \
+    --prompt-lengths "16 64" \
+    --device cpu \
+    --auth
+```
+
+2. PyTorch with `torch.compile`, FP16
+```
+CUDA_VISIBLE_DEVICES=0 python3 -m models.llama.benchmark_e2e \
+    --benchmark-type pt-compile \
+    --model-name meta-llama/Llama-2-7b-hf \
+    --cache-dir ./model_cache \
+    --prompts-file ./models/llama/prompts.json \
+    --precision fp16 \
+    --batch-sizes "1 2" \
+    --prompt-lengths "16 64" \
+    --device cuda \
+    --auth
+```
+
+3. ONNX Runtime with `convert_to_onnx`, FP32
+```
+CUDA_VISIBLE_DEVICES=0 python3 -m models.llama.benchmark_e2e \
+    --benchmark-type ort \
+    --model-name meta-llama/Llama-2-7b-hf \
+    --cache-dir ./model_cache \
+    --onnx-model-path ./llama2-7b/rank_0_Llama-2-7b-hf_decoder_merged_model_fp32.onnx \
+    --prompts-file ./models/llama/prompts.json \
+    --precision fp32 \
+    --batch-sizes "1 2" \
+    --prompt-lengths "16 64" \
+    --device cpu \
+    --auth
+```
+
+4. ONNX Runtime with `convert_to_onnx`, FP16
+```
+CUDA_VISIBLE_DEVICES=0 python3 -m models.llama.benchmark_e2e \
+    --benchmark-type ort \
+    --model-name meta-llama/Llama-2-7b-hf \
+    --cache-dir ./model_cache \
+    --onnx-model-path ./llama2-7b/rank_0_Llama-2-7b-hf_decoder_merged_model_fp32.onnx \
+    --prompts-file ./models/llama/prompts.json \
+    --precision fp16 \
+    --batch-sizes "1 2" \
+    --prompt-lengths "16 64" \
+    --device cuda \
+    --use_buffer_share \
+    --auth
+```
+
+## E2E Inference with LLaMA-2
+
+For end-to-end inference, please visit the [ONNX Runtime Inference Examples folder](https://github.com/microsoft/onnxruntime-inference-examples/tree/main/python/models/llama) for a step-by-step walkthrough, code examples, and performance metrics.
 
 # Mistral
 

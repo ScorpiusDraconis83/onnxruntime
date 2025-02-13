@@ -4,7 +4,7 @@
 #pragma once
 
 #include <wrl/client.h>
-#include <d3d12.h>
+#include "directx/d3d12.h"
 #include <wil/wrl.h>
 #include <wil/result_macros.h>
 #include "External/D3DX12/d3dx12.h"
@@ -24,7 +24,7 @@ namespace Dml
             OrtMemoryInfo(
                 "DML",
                 OrtAllocatorType::OrtDeviceAllocator,
-                OrtDevice(OrtDevice::GPU, OrtDevice::MemType::DEFAULT, 0)
+                OrtDevice(OrtDevice::DML, OrtDevice::MemType::DEFAULT, 0)
             ))
         {
             m_device = onnxruntime::DMLProviderFactoryCreator::CreateD3D12Device(device_id, false);

@@ -126,9 +126,9 @@ def parse_qnn_json_file(qnn_json_file_path, qnn_input_output_tensor_dic):
                 qnn_tensor.dim = qnn_tensor_attribute["dims"]
                 qnn_input_output_tensor_dic[qnn_tensor_name] = qnn_tensor
 
-    assert (
-        len(qnn_input_output_tensor_dic) > 1
-    ), "Converted QNN model not valid. It should have at least 1 input & 1 output."
+    assert len(qnn_input_output_tensor_dic) > 1, (
+        "Converted QNN model not valid. It should have at least 1 input & 1 output."
+    )
 
 
 def compare_onnx_shape_with_qnn_shape(onnx_dims, qnn_dims):
@@ -270,19 +270,15 @@ def main():
             raise AssertionError("Error: Onnx model output: " + graph_output.name + " not exist from QNN model output.")
 
     for node in model.graph.node:
-        node_input_index = 0
-        for node_input in node.input:
+        for node_input_index, node_input in enumerate(node.input):
             # update consumer node for graph inputs to connect to inserted node
             if node_input in graph_input_output_name_dic:
                 node.input[node_input_index] = graph_input_output_name_dic[node_input]
-            node_input_index += 1
 
-        node_output_index = 0
-        for node_output in node.output:
+        for node_output_index, node_output in enumerate(node.output):
             # update producer node for graph outputs to connect to inserted node
             if node_output in graph_input_output_name_dic:
                 node.output[node_output_index] = graph_input_output_name_dic[node_output]
-            node_output_index += 1
 
     model.graph.node.extend(nodes_to_add)
     graph_topological_sort(model.graph)

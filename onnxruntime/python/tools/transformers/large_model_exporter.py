@@ -6,13 +6,13 @@
 """
 Export LLM to onnx
 """
+
 import argparse
 import inspect
 import math
 import os
 import tempfile
 from pathlib import Path
-from typing import Optional
 
 import onnx
 import torch
@@ -49,7 +49,7 @@ def get_model_parameter_size(model: nn.Module):
     return all_size
 
 
-def initialize_model_and_sample_inputs(hf_model: str, cache_dir: Optional[str], tokenizer=None):
+def initialize_model_and_sample_inputs(hf_model: str, cache_dir: str | None, tokenizer=None):
     """
     get the pretrained torch model from hugginface,
     and sample model-inputs
@@ -154,7 +154,7 @@ def retrieve_onnx_inputs(model: nn.Module, sample_inputs: tuple, with_past: bool
     for key, value in user_inputs[1].items():
         idx = input_keys.index(key)
         onnx_inputs[idx] = value
-    for idx, (key, value) in enumerate(zip(input_keys, onnx_inputs)):
+    for idx, (key, value) in enumerate(zip(input_keys, onnx_inputs, strict=False)):
         if type(value) is torch.Tensor:
             value.to(model.device)
         if "use_cache" in key:
@@ -173,8 +173,8 @@ def move_to_appropriate_device(model: nn.Module, sample_inputs_tp: tuple) -> nn.
     """
     total_mem_per_cpu = torch.cuda.get_device_properties(0).total_memory / 1024 / 1024
 
-    print(f"Model_Size = {get_model_parameter_size(model)/1024} GB")
-    print(f"total_mem_per_cpu = {total_mem_per_cpu/1024} GB")
+    print(f"Model_Size = {get_model_parameter_size(model) / 1024} GB")
+    print(f"total_mem_per_cpu = {total_mem_per_cpu / 1024} GB")
     if get_model_parameter_size(model) > total_mem_per_cpu * 0.45:
         device_collection = [torch.device(i) for i in range(torch.cuda.device_count())]
         if len(device_collection) > 1:
@@ -224,26 +224,35 @@ def fetch_onnx_inputs_outputs_name(
     if not num_of_past_key:
         num_of_past_key = model.config.num_hidden_layers
 
-    onnx_inp_names = ("input_ids", "attention_mask")
+    # filter out constant inputs
+    onnx_inp_names = tuple(
+        [torch_input_names[i] for i in range(len(torch_input_names)) if isinstance(onnx_inputs[i], torch.Tensor)]
+    )
+    assert "input_ids" in onnx_inp_names and "attention_mask" in onnx_inp_names, (
+        "input_ids and attention_mask must be existed in inputs"
+    )
     onnx_out_names = ("logits",)
     onnx_dynamic_axes = {
         "input_ids": {0: "batch_size", 1: "seq_len"},
         "attention_mask": {0: "batch_size", 1: "seq_len"},
     }
+    # add dyanmic dimensions for the unkonw inputs
+    for idx, name in enumerate(onnx_inp_names):
+        if name not in onnx_dynamic_axes:
+            unknown_dims = {i: f"{idx}__unknown_dims__{i}" for i in range(onnx_inputs[idx].dim())}
+            onnx_dynamic_axes[name] = unknown_dims
     if input_with_past:
         for i in range(num_of_past_key):
-            onnx_inp_names += (f"present_key.{i}",)
-            onnx_inp_names += (f"present_values.{i}",)
+            onnx_inp_names += (f"past_key_values.{i}.key",)
+            onnx_inp_names += (f"past_key_values.{i}.value",)
 
             onnx_dynamic_axes[onnx_inp_names[-1]] = kv_cache_axis
             onnx_dynamic_axes[onnx_inp_names[-2]] = kv_cache_axis
 
     if with_past or input_with_past:
         for i in range(num_of_past_key):
-            onnx_out_names += (f"past_key.{i}",)
-            onnx_out_names += (f"past_values.{i}",)
-            onnx_dynamic_axes[onnx_out_names[-1]] = kv_cache_axis
-            onnx_dynamic_axes[onnx_out_names[-2]] = kv_cache_axis
+            onnx_out_names += (f"present.{i}.key",)
+            onnx_out_names += (f"present.{i}.value",)
 
     for idx, name in enumerate(torch_input_names):
         if input_with_past:
@@ -299,7 +308,7 @@ def do_export_internal(model: nn.Module, onnx_io_tuple: tuple, onnx_inputs: tupl
 
 
 @torch.no_grad()
-def export_onnx(hf_model: str, cache_dir: Optional[str], onnx_path_str: str, with_past: bool, opset: int):
+def export_onnx(hf_model: str, cache_dir: str | None, onnx_path_str: str, with_past: bool, opset: int):
     """
     do export
     model: torch model
@@ -359,7 +368,7 @@ def parse_arguments():
         required=False,
         type=str,
         default=None,
-        help=("cache directy of huggingface, by setting this to avoid useless downloading if you have one"),
+        help=("cache directly of huggingface, by setting this to avoid useless downloading if you have one"),
     )
     parser.add_argument(
         "--with_past",

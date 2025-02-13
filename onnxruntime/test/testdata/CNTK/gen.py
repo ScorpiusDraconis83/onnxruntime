@@ -23,7 +23,7 @@ def SaveTensorProto(file_path, variable, data, name):  # noqa: N802
 def SaveData(test_data_dir, prefix, variables, data_list, name_replacements=None):  # noqa: N802
     if isinstance(data_list, np.ndarray):
         data_list = [data_list]
-    for (i, d), v in zip(enumerate(data_list), variables):
+    for (i, d), v in zip(enumerate(data_list), variables, strict=False):
         SaveTensorProto(
             os.path.join(test_data_dir, f"{prefix}_{i}.pb"),
             v,
@@ -48,10 +48,10 @@ def Save(dir, func, feed, outputs):  # noqa: N802
             if actual_input_name.startswith(cntk_name):
                 cntk_to_actual_names[cntk_name] = actual_input_name
 
-    if type(feed) is not dict:  # noqa: E721
+    if type(feed) is not dict:
         feed = {func.arguments[0]: feed}
 
-    if type(outputs) is not dict:  # noqa: E721
+    if type(outputs) is not dict:
         outputs = {func.outputs[0]: outputs}
 
     test_data_dir = os.path.join(dir, data_dir)

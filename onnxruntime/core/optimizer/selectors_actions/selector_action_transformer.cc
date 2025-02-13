@@ -147,7 +147,7 @@ static Status MatchAndProcess(
       RuntimeOptimizationRecord::ProducedOpIdVector produced_op_ids{};
       produced_op_ids.reserve(action_saved_state.produced_node_op_schemas.size());
 
-      for (const auto op_schema : action_saved_state.produced_node_op_schemas) {
+      for (const auto& op_schema : action_saved_state.produced_node_op_schemas) {
         produced_op_ids.push_back(utils::MakeOpId(*op_schema));
         if (save_context->record_produced_node_op_schema) {
           status = save_context->record_produced_node_op_schema(*op_schema);
@@ -246,7 +246,8 @@ static Status SetOpSinceVersionForProducedNodes(NodeIndex pre_action_max_num_nod
     ++produced_op_id_it;
   }
 
-  ORT_RETURN_IF(produced_op_id_it != produced_op_ids_end, "Too many produced nodes in the runtime optimization record.");
+  ORT_RETURN_IF(produced_op_id_it != produced_op_ids_end,
+                "Too many produced nodes in the runtime optimization record.");
 
   return Status::OK();
 }
@@ -275,6 +276,12 @@ Status SelectorActionTransformer::ApplySavedRuntimeOptimizations(
     }
 
     // all nodes in the group are still available if IsValid returns true
+
+    if (!graph_utils::IsSupportedProvider(nodes_to_optimize.Target(), GetCompatibleExecutionProviders())) {
+      // TODO is it enough to just check the target node?
+      LOGS(logger, VERBOSE) << "Target node is not assigned to a compatible execution provider, skipping action.";
+      continue;
+    }
 
     const NodeIndex pre_action_num_nodes = graph.MaxNodeIndex();
 

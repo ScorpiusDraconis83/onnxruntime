@@ -5,8 +5,6 @@
 #include <unordered_map>
 #include <string>
 
-#include <core/graph/graph.h>
-
 #include "op_builder_factory.h"
 
 namespace onnxruntime {
@@ -51,13 +49,13 @@ OpBuilderRegistrations::OpBuilderRegistrations() {
     CreateSimpleOpBuilder("Sub", *this);
     CreateSimpleOpBuilder("Tanh", *this);
 
-    CreateSimpleOpBuilder("MatMul", *this);
     CreateSimpleOpBuilder("Concat", *this);
 
     CreateSimpleOpBuilder("QuantizeLinear", *this);
     CreateSimpleOpBuilder("DequantizeLinear", *this);
 
     CreateSimpleOpBuilder("HardSwish", *this);
+    CreateSimpleOpBuilder("HardSigmoid", *this);
 
     CreateSimpleOpBuilder("DepthToSpace", *this);
     CreateSimpleOpBuilder("SpaceToDepth", *this);
@@ -82,6 +80,7 @@ OpBuilderRegistrations::OpBuilderRegistrations() {
     CreateReduceOpBuilder("ReduceMin", *this);
     CreateReduceOpBuilder("ReduceProd", *this);
     CreateReduceOpBuilder("ReduceSum", *this);
+    CreateReduceOpBuilder("ReduceL2", *this);
   }
 
   {
@@ -109,6 +108,7 @@ OpBuilderRegistrations::OpBuilderRegistrations() {
 
   {
     CreateGatherOpBuilder("Gather", *this);
+    CreateGatherOpBuilder("GatherElements", *this);
   }
 
   {
@@ -166,6 +166,10 @@ OpBuilderRegistrations::OpBuilderRegistrations() {
 
   {
     CreateExpandOpBuilder("Expand", *this);
+  }
+
+  {
+    CreateMatMulOpBuilder("MatMul", *this);
   }
 }
 

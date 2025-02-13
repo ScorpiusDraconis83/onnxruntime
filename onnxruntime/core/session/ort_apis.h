@@ -345,6 +345,12 @@ ORT_API_STATUS_IMPL(AddExternalInitializers, _In_ OrtSessionOptions* options,
                     _In_reads_(initializers_num) const char* const* initializer_names,
                     _In_reads_(initializers_num) const OrtValue* const* initializers, size_t initializers_num);
 
+ORT_API_STATUS_IMPL(AddExternalInitializersFromFilesInMemory, _In_ OrtSessionOptions* options,
+                    _In_reads_(num_external_initializer_files) const ORTCHAR_T* const* file_names,
+                    _In_reads_(num_external_initializer_files) char* const* buffer_array,
+                    _In_reads_(num_external_initializer_files) const size_t* file_lengths,
+                    size_t num_external_initializer_files);
+
 ORT_API_STATUS_IMPL(CreateOpAttr,
                     _In_ const char* name,
                     _In_ const void* data,
@@ -502,4 +508,29 @@ ORT_API_STATUS_IMPL(SetSymbolicDimensions, _In_ OrtTensorTypeAndShapeInfo* info,
 ORT_API_STATUS_IMPL(ReadOpAttr, _In_ const OrtOpAttr* op_attr, _In_ OrtOpAttrType type, _Inout_ void* data, _In_ size_t len, _Out_ size_t* out);
 ORT_API_STATUS_IMPL(SetDeterministicCompute, _Inout_ OrtSessionOptions* options, bool value);
 
+ORT_API_STATUS_IMPL(KernelContext_ParallelFor, _In_ const OrtKernelContext* context, _In_ void (*fn)(void*, size_t), _In_ size_t total, _In_ size_t num_batch, _In_ void* user_data);
+
+ORT_API_STATUS_IMPL(SessionOptionsAppendExecutionProvider_OpenVINO_V2,
+                    _In_ OrtSessionOptions* options,
+                    _In_reads_(num_keys) const char* const* provider_options_keys,
+                    _In_reads_(num_keys) const char* const* provider_options_values,
+                    _In_ size_t num_keys);
+
+ORT_API_STATUS_IMPL(SessionOptionsAppendExecutionProvider_VitisAI, _In_ OrtSessionOptions* options,
+                    _In_reads_(num_keys) const char* const* provider_options_keys,
+                    _In_reads_(num_keys) const char* const* provider_options_values, _In_ size_t num_keys);
+
+ORT_API_STATUS_IMPL(KernelContext_GetScratchBuffer, _In_ const OrtKernelContext* context, _In_ const OrtMemoryInfo* mem_info, _In_ size_t count_or_bytes, _Outptr_ void** out);
+
+ORT_API_STATUS_IMPL(KernelInfoGetAllocator, _In_ const OrtKernelInfo* info, _In_ OrtMemType mem_type, _Outptr_ OrtAllocator** out);
+
+ORT_API_STATUS_IMPL(CreateLoraAdapter, _In_ const ORTCHAR_T* adapter_file_path, _In_ OrtAllocator* allocator,
+                    _Outptr_ OrtLoraAdapter** out);
+ORT_API_STATUS_IMPL(CreateLoraAdapterFromArray, _In_ const void* bytes, size_t num_bytes, _In_ OrtAllocator* allocator,
+                    _Outptr_ OrtLoraAdapter** out);
+ORT_API(void, ReleaseLoraAdapter, _Frees_ptr_opt_ OrtLoraAdapter*);
+ORT_API_STATUS_IMPL(RunOptionsAddActiveLoraAdapter, _Inout_ OrtRunOptions* options, _In_ const OrtLoraAdapter* adapter);
+
+ORT_API_STATUS_IMPL(SetEpDynamicOptions, _Inout_ OrtSession* sess, _In_reads_(kv_len) const char* const* keys,
+                    _In_reads_(kv_len) const char* const* values, _In_ size_t kv_len);
 }  // namespace OrtApis

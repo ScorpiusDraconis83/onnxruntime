@@ -18,8 +18,8 @@ from ._modifier import FP16OptimizerModifier, check_overflow, clip_grad_norm_fp3
 class LegacyMegatronLMModifier(FP16OptimizerModifier):
     def __init__(self, optimizer, **kwargs) -> None:
         super().__init__(optimizer)
-        self.get_horizontal_model_parallel_rank = kwargs.get("get_horizontal_model_parallel_rank", None)
-        self.get_horizontal_model_parallel_group = kwargs.get("get_horizontal_model_parallel_group", None)
+        self.get_horizontal_model_parallel_rank = kwargs.get("get_horizontal_model_parallel_rank")
+        self.get_horizontal_model_parallel_group = kwargs.get("get_horizontal_model_parallel_group")
 
     def can_be_modified(self):
         return self.check_requirements(
@@ -27,7 +27,7 @@ class LegacyMegatronLMModifier(FP16OptimizerModifier):
         )
 
     def override_function(self):
-        warnings.warn("Megatron-LM fp16_optimizer functions are overrided with faster implementation.", UserWarning)
+        warnings.warn("Megatron-LM fp16_optimizer functions are overridden with faster implementation.", UserWarning)
 
         def clip_master_grads(target, max_norm, norm_type=2):
             """

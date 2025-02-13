@@ -15,17 +15,17 @@ from . import amp, artifacts, optim
 __all__ = [
     "PropagateCastOpsStrategy",
     "TrainingParameters",
-    "is_ortmodule_available",
     "amp",
     "artifacts",
+    "is_ortmodule_available",
     "optim",
 ]
 
 try:
     if is_ortmodule_available():
-        from .ortmodule import ORTModule  # noqa: F401
+        from .ortmodule import ORTModule
 
-        __all__.append("ORTModule")
+        __all__ += ["ORTModule"]
 except ImportError:
     # That is OK iff this is not a ORTModule training package
     pass

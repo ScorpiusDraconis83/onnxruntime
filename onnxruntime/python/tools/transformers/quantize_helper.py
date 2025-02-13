@@ -7,7 +7,7 @@
 import logging
 import os
 
-import onnx  # noqa: F401
+import onnx
 import torch
 from transformers.modeling_utils import Conv1D
 
@@ -64,12 +64,13 @@ class QuantizeHelper:
         from onnxruntime.quantization import quantize_dynamic
 
         Path(quantized_model_path).parent.mkdir(parents=True, exist_ok=True)
-        logger.info(f"Size of full precision ONNX model(MB):{os.path.getsize(onnx_model_path)/(1024*1024)}")
+        logger.info(f"Size of full precision ONNX model(MB):{os.path.getsize(onnx_model_path) / (1024 * 1024)}")
         quantize_dynamic(
             onnx_model_path,
             quantized_model_path,
             use_external_data_format=use_external_data_format,
+            extra_options={"DefaultTensorType": onnx.TensorProto.FLOAT},
         )
         logger.info(f"quantized model saved to:{quantized_model_path}")
         # TODO: inlcude external data in total model size.
-        logger.info(f"Size of quantized ONNX model(MB):{os.path.getsize(quantized_model_path)/(1024*1024)}")
+        logger.info(f"Size of quantized ONNX model(MB):{os.path.getsize(quantized_model_path) / (1024 * 1024)}")

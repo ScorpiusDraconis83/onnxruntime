@@ -8,12 +8,12 @@ import shutil
 import warnings
 from io import TextIOWrapper
 from pathlib import Path
-from typing import List, Optional, Tuple, Union
 
 import onnx
 import torch
 
 from ._subscriber_base import RuntimeStates, SubscriberBase
+from ._subscriber_manager import ORT_NO_INCREASE_GLOBAL_STEP
 
 
 class _InspectActivation(torch.autograd.Function):
@@ -28,7 +28,7 @@ class _InspectActivation(torch.autograd.Function):
     def forward(
         ctx,
         activation_name: str,
-        module_idx: Optional[int],
+        module_idx: int | None,
         run_ctx: RuntimeStates,
         input_tensor: torch.Tensor,
         module_post_forward,
@@ -88,9 +88,9 @@ class _InspectActivation(torch.autograd.Function):
     @staticmethod
     def infer_shape(
         node: onnx.NodeProto,
-        tensor_input_shapes: List[Optional[List[Union[int, str]]]],
-        tensor_input_dtypes: List[torch.onnx.TensorProtoDataType],
-    ) -> Tuple[List[Optional[List[Union[int, str]]]], List[torch.onnx.TensorProtoDataType]]:
+        tensor_input_shapes: list[list[int | str] | None],
+        tensor_input_dtypes: list[torch.onnx.TensorProtoDataType],
+    ) -> tuple[list[list[int | str] | None], list[torch.onnx.TensorProtoDataType]]:
         return tensor_input_shapes, tensor_input_dtypes
 
     @staticmethod
@@ -123,8 +123,8 @@ class StatisticsSubscriber(SubscriberBase):
     def __init__(
         self,
         output_dir: str,
-        start_step: Union[None, int] = None,
-        end_step: Union[None, int] = None,
+        start_step: None | int = None,
+        end_step: None | int = None,
         override_output_dir: bool = False,
         run_on_cpu: bool = False,
         bucket_size: int = 1024 * 1024 * 1024 // 2,
@@ -176,21 +176,23 @@ class StatisticsSubscriber(SubscriberBase):
         display_name = name + " forward run" if is_forward is True else name + " backward run"
         output_file_name = name + "_forward" if is_forward is True else name + "_backward"
 
-        if tensor is None or not isinstance(tensor, torch.Tensor):
-            print(f"{display_name} not a torch tensor, value: {tensor}")
-            return
+        # Skip dump during model pre-export output schema preparison run and export run.
+        if ORT_NO_INCREASE_GLOBAL_STEP[0] is False:
+            if tensor is None or not isinstance(tensor, torch.Tensor):
+                print(f"{display_name} not a torch tensor, value: {tensor}")
+                return
 
-        step_path = Path(step_folder)
-        if not step_path.exists():
-            step_path.mkdir(parents=True, exist_ok=False)
-        order_file_path = step_path / "order.txt"
-        tensor_file_path = step_path / output_file_name
+            step_path = Path(step_folder)
+            if not step_path.exists():
+                step_path.mkdir(parents=True, exist_ok=False)
+            order_file_path = step_path / "order.txt"
+            tensor_file_path = step_path / output_file_name
 
-        with order_file_path.open(mode="a", encoding="utf-8") as f:
-            f.write(f"{output_file_name}\n")
+            with order_file_path.open(mode="a", encoding="utf-8") as f:
+                f.write(f"{output_file_name}\n")
 
-        with tensor_file_path.open(mode="w", encoding="utf-8") as f:
-            _summarize_tensor(display_name, tensor, f, depth, self._run_on_cpu, self._bucket_size)
+            with tensor_file_path.open(mode="w", encoding="utf-8") as f:
+                _summarize_tensor(display_name, tensor, f, depth, self._run_on_cpu, self._bucket_size)
 
 
 def _summarize_tensor(
@@ -275,11 +277,11 @@ def _summarize_tensor(
         std_value = torch.sqrt(s.sum() / (element_count - 1))
 
     f.write(
-        f"{'>'*max(0, depth) + display_name} shape: {tensor_shape} dtype: {tensor_dtype} size: {flatten_array.size()} \n"
+        f"{'>' * max(0, depth) + display_name} shape: {tensor_shape} dtype: {tensor_dtype} size: {flatten_array.size()} \n"
         f"min: {min_value} max: {max_value}, mean: {mean_value}, "
         f"std: {std_value} \n"
         f"nan: {num_nan}, inf: {num_inf}\n"
     )
     f.write(f"samples(top 128): {flatten_array[:128]}\n")
     f.write(f"neg: {num_neg}, pos: {num_pos}, zero: {num_zero},\n")
-    f.write(f"{'='*16}\n")
+    f.write(f"{'=' * 16}\n")

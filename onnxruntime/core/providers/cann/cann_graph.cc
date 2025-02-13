@@ -10,8 +10,7 @@
 namespace onnxruntime {
 namespace cann {
 
-static int lower_bound = 8;   // Supported domain version lower bounds
-static int upper_bound = 15;  // Supported domain version upper bounds
+static int lower_bound = 8;  // Supported domain version lower bounds
 
 std::once_flag flag;
 
@@ -62,7 +61,7 @@ std::vector<NodeIndex> SupportONNXModel(const GraphViewer& graph_viewer) {
   for (const auto& index : graph_viewer.GetNodesInTopologicalOrder()) {
     const auto& node = graph_viewer.GetNode(index);
 
-    if (node->Domain() != kOnnxDomain || domain_version < lower_bound || domain_version > upper_bound ||
+    if (node->Domain() != kOnnxDomain || domain_version < lower_bound ||
         !cann_supported_ops.count(node->OpType())) {
       unsupported_nodes.push_back(index);
       continue;
@@ -115,7 +114,9 @@ Status BuildONNXModel(ge::Graph& graph, std::string input_shape, const char* soc
   options.emplace(ge::ir_option::INPUT_SHAPE, input_shape.c_str());
   CANN_GRAPH_RETURN_IF_ERROR(ge::aclgrphBuildModel(graph, options, model));
 
-  CANN_GRAPH_RETURN_IF_ERROR(ge::aclgrphSaveModel(file_name.c_str(), model));
+  if (info.dump_om_model) {
+    CANN_GRAPH_RETURN_IF_ERROR(ge::aclgrphSaveModel(file_name.c_str(), model));
+  }
 
   return Status::OK();
 }

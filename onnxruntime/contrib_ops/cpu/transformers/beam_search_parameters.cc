@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 #include "contrib_ops/cpu/transformers/beam_search_parameters.h"
+#include "core/platform/env_var_utils.h"
 
 namespace onnxruntime {
 namespace contrib {
@@ -123,6 +124,22 @@ void BeamSearchParameters::ParseFromInputs(OpKernelContext* context) {
   logits_processor = logits_processor_tensor ? static_cast<int>(*logits_processor_tensor->Data<int32_t>()) : 0;
   ORT_ENFORCE(logits_processor >= 0,
               "logits_processor shall be a non-negative integer, got ", logits_processor);
+
+  if (this->model_type == IGenerationParameters::kModelTypeWhisper) {
+    auto* temperature_tensor = context->Input<Tensor>(14);
+    if (temperature_tensor) {
+      if (temperature_tensor->IsDataType<float>()) {
+        temperature = *temperature_tensor->Data<float>();
+      } else {
+        temperature = static_cast<float>(*temperature_tensor->Data<MLFloat16>());
+      }
+    } else {
+      temperature = 1.0f;
+    }
+  }
+
+  // The following parameter is read from environment variable for testing purpose.
+  use_fast_topk = ParseEnvironmentVariableWithDefault<bool>(kBeamSearchUseFastTopK, true);
 }
 
 void BeamSearchParameters::SetSubgraphParameters(int vocabulary_size, int heads, int hidden_size_per_head, int layers) {
@@ -141,7 +158,13 @@ void WhisperBeamSearchParameters::ParseFromAttributes(const OpKernelInfo& info) 
   model_type = static_cast<int>(info.GetAttrOrDefault<int64_t>("model_type", IGenerationParameters::kModelTypeWhisper));
   ORT_ENFORCE(model_type == IGenerationParameters::kModelTypeWhisper);
 
-  no_speech_token = static_cast<int>(info.GetAttrOrDefault<int64_t>("no_speech_token", -1LL));
+  // Token ids are defined below in the order that they appear in the tokenizer
+  translate_token_id = static_cast<int>(info.GetAttrOrDefault<int64_t>("translate_token_id", -1LL));
+  transcribe_token_id = static_cast<int>(info.GetAttrOrDefault<int64_t>("transcribe_token_id", -1LL));
+  start_of_lm_token_id = static_cast<int>(info.GetAttrOrDefault<int64_t>("start_of_lm_token_id", -1LL));
+  no_speech_token_id = static_cast<int>(info.GetAttrOrDefault<int64_t>("no_speech_token_id", -1LL));
+  no_timestamps_token_id = static_cast<int>(info.GetAttrOrDefault<int64_t>("no_timestamps_token_id", -1LL));
+  beginning_timestamp_token_id = static_cast<int>(info.GetAttrOrDefault<int64_t>("beginning_timestamp_token_id", -1LL));
   cross_qk_layer_head_input_id = 12;
   extra_decoding_ids_input_id = 13;
   cross_qk_output_id = 3;

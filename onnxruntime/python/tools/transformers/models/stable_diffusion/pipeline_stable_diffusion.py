@@ -24,7 +24,7 @@ import os
 import pathlib
 import random
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import numpy as np
 import nvtx
@@ -383,7 +383,7 @@ class StableDiffusionPipeline:
         # Note: negative prompt embedding is not needed for SD XL when guidance <= 1
         if do_classifier_free_guidance:
             # For SD XL base, handle force_zeros_for_empty_prompt
-            is_empty_negative_prompt = all([not i for i in negative_prompt])
+            is_empty_negative_prompt = all(not i for i in negative_prompt)
             if force_zeros_for_empty_prompt and is_empty_negative_prompt:
                 uncond_embeddings = torch.zeros_like(text_embeddings)
                 if output_hidden_states:
@@ -459,9 +459,9 @@ class StableDiffusionPipeline:
                 noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
                 noise_pred = noise_pred_uncond + guidance * (noise_pred_text - noise_pred_uncond)
 
-            if type(self.scheduler) == UniPCMultistepScheduler:
+            if type(self.scheduler) is UniPCMultistepScheduler:
                 latents = self.scheduler.step(noise_pred, timestep, latents, return_dict=False)[0]
-            elif type(self.scheduler) == LCMScheduler:
+            elif type(self.scheduler) is LCMScheduler:
                 latents = self.scheduler.step(noise_pred, timestep, latents, generator=self.generator)[0]
             else:
                 latents = self.scheduler.step(noise_pred, latents, step_offset + step_index, timestep)
@@ -485,7 +485,7 @@ class StableDiffusionPipeline:
         self.stop_profile("vae")
         return images
 
-    def print_summary(self, tic, toc, batch_size, vae_enc=False, pil=False) -> Dict[str, Any]:
+    def print_summary(self, tic, toc, batch_size, vae_enc=False, pil=False) -> dict[str, Any]:
         throughput = batch_size / (toc - tic)
         latency_clip = cudart.cudaEventElapsedTime(self.events["clip-start"], self.events["clip-stop"])[1]
         latency_unet = cudart.cudaEventElapsedTime(self.events["denoise-start"], self.events["denoise-stop"])[1]
@@ -546,8 +546,8 @@ class StableDiffusionPipeline:
         """
         return ((images + 1) / 2).clamp(0, 1).detach().permute(0, 2, 3, 1).float().cpu().numpy()
 
-    def metadata(self) -> Dict[str, Any]:
-        return {
+    def metadata(self) -> dict[str, Any]:
+        data = {
             "actual_steps": self.actual_steps,
             "seed": self.get_current_seed(),
             "name": self.pipeline_info.name(),
@@ -555,14 +555,20 @@ class StableDiffusionPipeline:
             "custom_unet": self.pipeline_info.custom_unet(),
         }
 
-    def save_images(self, images: List, prompt: List[str], negative_prompt: List[str], metadata: Dict[str, Any]):
+        if self.engine_type == EngineType.ORT_CUDA:
+            for engine_name, engine in self.backend.engines.items():
+                data.update(engine.metadata(engine_name))
+
+        return data
+
+    def save_images(self, images: list, prompt: list[str], negative_prompt: list[str], metadata: dict[str, Any]):
         session_id = str(random.randint(1000, 9999))
         for i, image in enumerate(images):
             seed = str(self.get_current_seed())
             prefix = "".join(x for x in prompt[i] if x.isalnum() or x in ", -").replace(" ", "_")[:20]
             parts = [prefix, session_id, str(i + 1), str(seed), self.current_scheduler, str(self.actual_steps)]
             image_path = os.path.join(self.output_dir, "-".join(parts) + ".png")
-            print(f"Saving image {i+1} / {len(images)} to: {image_path}")
+            print(f"Saving image {i + 1} / {len(images)} to: {image_path}")
 
             from PIL import PngImagePlugin
 
@@ -741,19 +747,20 @@ class StableDiffusionPipeline:
 
     def run(
         self,
-        prompt: List[str],
-        negative_prompt: List[str],
+        prompt: list[str],
+        negative_prompt: list[str],
         image_height: int,
         image_width: int,
         denoising_steps: int = 30,
         guidance: float = 5.0,
-        seed: Optional[int] = None,
-        image: Optional[torch.Tensor] = None,
+        seed: int | None = None,
+        image: torch.Tensor | None = None,
         strength: float = 0.3,
-        controlnet_images: Optional[torch.Tensor] = None,
-        controlnet_scales: Optional[torch.Tensor] = None,
+        controlnet_images: torch.Tensor | None = None,
+        controlnet_scales: torch.Tensor | None = None,
         show_latency: bool = False,
         output_type: str = "pil",
+        deterministic: bool = False,
     ):
         """
         Run the diffusion pipeline.
@@ -783,6 +790,9 @@ class StableDiffusionPipeline:
             output_type (str):
                 It can be "latent", "pt" or "pil".
         """
+        if deterministic:
+            torch.use_deterministic_algorithms(True)
+
         if self.is_backend_tensorrt():
             import tensorrt as trt
             from trt_utilities import TRT_LOGGER

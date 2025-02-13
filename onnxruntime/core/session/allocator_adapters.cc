@@ -2,12 +2,17 @@
 // Licensed under the MIT License.
 
 #include "allocator_adapters.h"
+#include "core/framework/error_code_helper.h"
 #include "core/session/inference_session.h"
 #include "core/session/ort_env.h"
 #include "core/session/ort_apis.h"
-#include "core/framework/error_code_helper.h"
 
 namespace onnxruntime {
+
+namespace {
+constexpr uint32_t kOrtAllocatorReserveMinVersion = 18;
+}  // namespace
+
 OrtAllocatorImplWrappingIAllocator::OrtAllocatorImplWrappingIAllocator(onnxruntime::AllocatorPtr&& i_allocator)
     : i_allocator_(std::move(i_allocator)) {
   OrtAllocator::version = ORT_API_VERSION;
@@ -17,10 +22,18 @@ OrtAllocatorImplWrappingIAllocator::OrtAllocatorImplWrappingIAllocator(onnxrunti
       [](OrtAllocator* this_, void* p) { static_cast<OrtAllocatorImplWrappingIAllocator*>(this_)->Free(p); };
   OrtAllocator::Info =
       [](const OrtAllocator* this_) { return static_cast<const OrtAllocatorImplWrappingIAllocator*>(this_)->Info(); };
+  if (OrtAllocator::version >= kOrtAllocatorReserveMinVersion) {
+    OrtAllocator::Reserve =
+        [](OrtAllocator* this_, size_t size) { return static_cast<OrtAllocatorImplWrappingIAllocator*>(this_)->Reserve(size); };
+  }
 }
 
 void* OrtAllocatorImplWrappingIAllocator::Alloc(size_t size) {
   return i_allocator_->Alloc(size);
+}
+
+void* OrtAllocatorImplWrappingIAllocator::Reserve(size_t size) {
+  return i_allocator_->Reserve(size);
 }
 
 void OrtAllocatorImplWrappingIAllocator::Free(void* p) {
@@ -39,6 +52,14 @@ IAllocatorImplWrappingOrtAllocator::IAllocatorImplWrappingOrtAllocator(OrtAlloca
     : IAllocator(*ort_allocator->Info(ort_allocator)), ort_allocator_(ort_allocator) {}
 
 void* IAllocatorImplWrappingOrtAllocator::Alloc(size_t size) {
+  return ort_allocator_->Alloc(ort_allocator_, size);
+}
+
+void* IAllocatorImplWrappingOrtAllocator::Reserve(size_t size) {
+  if (ort_allocator_->version >= kOrtAllocatorReserveMinVersion && ort_allocator_->Reserve) {
+    return ort_allocator_->Reserve(ort_allocator_, size);
+  }
+
   return ort_allocator_->Alloc(ort_allocator_, size);
 }
 

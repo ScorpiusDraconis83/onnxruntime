@@ -5,10 +5,11 @@
 Utilities to help process files containing kernel registrations.
 """
 
+from __future__ import annotations
+
 import os
 import pathlib
 import sys
-import typing
 
 from logger import get_logger
 
@@ -88,12 +89,12 @@ class RegistrationProcessor:
 
     def process_registration(
         self,
-        lines: typing.List[str],
+        lines: list[str],
         domain: str,
         operator: str,
         start_version: int,
-        end_version: typing.Optional[int] = None,
-        type: typing.Optional[str] = None,
+        end_version: int | None = None,
+        type: str | None = None,
     ):
         """
         Process lines that contain a kernel registration.
@@ -104,14 +105,12 @@ class RegistrationProcessor:
         :param end_version: End version or None if unversioned registration
         :param type: Type or types used in registration, if this is a typed registration
         """
-        pass
 
     def process_other_line(self, line):
         """
         Process a line that does not contain a kernel registration
         :param line: Original line
         """
-        pass
 
     def ok(self):
         """
@@ -121,7 +120,7 @@ class RegistrationProcessor:
         return False  # return False as the derived class must override to report the real status
 
 
-def _process_lines(lines: typing.List[str], offset: int, registration_processor: RegistrationProcessor):
+def _process_lines(lines: list[str], offset: int, registration_processor: RegistrationProcessor):
     """
     Process one or more lines that contain a kernel registration.
     Merge lines if split over multiple, and call registration_processor.process_registration with the original lines
@@ -141,7 +140,7 @@ def _process_lines(lines: typing.List[str], offset: int, registration_processor:
     onnx_two_typed_op_len = len(onnx_two_typed_op)
     onnx_versioned_two_typed_op = "ONNX_OPERATOR_VERSIONED_TWO_TYPED_KERNEL_CLASS_NAME"
     onnx_versioned_two_typed_op_len = len(onnx_versioned_two_typed_op)
-    end_marks = tuple([");", ")>", ")>,", ")>,};", ")>};"])
+    end_marks = (");", ")>", ")>,", ")>,};", ")>};")
 
     end_mark = ""
     lines_to_process = []
@@ -238,9 +237,7 @@ def _process_lines(lines: typing.List[str], offset: int, registration_processor:
     return offset + 1
 
 
-def process_kernel_registration_file(
-    filename: typing.Union[str, pathlib.Path], registration_processor: RegistrationProcessor
-):
+def process_kernel_registration_file(filename: str | pathlib.Path, registration_processor: RegistrationProcessor):
     """
     Process a kernel registration file using registration_processor.
     :param filename: Path to file containing kernel registrations.
