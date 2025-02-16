@@ -1,4 +1,5 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
+// SPDX-FileCopyrightText: Copyright 2024 Arm Limited and/or its affiliates <open-source-office@arm.com>
 // Licensed under the MIT License.
 
 #include <set>
@@ -8,6 +9,8 @@
 #include <unordered_map>
 #ifdef _WIN32
 #include "getopt.h"
+#elif defined(_AIX)
+#include <thread>
 #else
 #include <getopt.h>
 #include <thread>
@@ -25,6 +28,10 @@
 #include "core/session/onnxruntime_session_options_config_keys.h"
 #include "nlohmann/json.hpp"
 
+#ifdef USE_CUDA
+#include "core/providers/cuda/cuda_provider_options.h"
+#endif
+
 using namespace onnxruntime;
 
 namespace {
@@ -40,26 +47,38 @@ void usage() {
       "\t-r [repeat]: Specifies the number of times to repeat\n"
       "\t-v: verbose\n"
       "\t-n [test_case_name]: Specifies a single test case to run.\n"
-      "\t-e [EXECUTION_PROVIDER]: EXECUTION_PROVIDER could be 'cpu', 'cuda', 'dnnl', 'tensorrt', "
-      "'openvino', 'rocm', 'migraphx', 'acl', 'armnn', 'xnnpack', 'nnapi', 'qnn', 'snpe' or 'coreml'. "
+      "\t-e [EXECUTION_PROVIDER]: EXECUTION_PROVIDER could be 'cpu', 'cuda', 'dnnl', 'tensorrt', 'vsinpu'"
+      "'openvino', 'rocm', 'migraphx', 'acl', 'armnn', 'xnnpack', 'webgpu', 'nnapi', 'qnn', 'snpe' or 'coreml'. "
       "Default: 'cpu'.\n"
       "\t-p: Pause after launch, can attach debugger and continue\n"
       "\t-x: Use parallel executor, default (without -x): sequential executor.\n"
       "\t-d [device_id]: Specifies the device id for multi-device (e.g. GPU). The value should > 0\n"
       "\t-t: Specify custom relative tolerance values for output value comparison. default: 1e-5\n"
       "\t-a: Specify custom absolute tolerance values for output value comparison. default: 1e-5\n"
+      "\t-C: Specify session configuration entries as key-value pairs: -C \"<key1>|<value1> <key2>|<value2>\" \n"
+      "\t    Refer to onnxruntime_session_options_config_keys.h for valid keys and values. \n"
+      "\t    [Example] -C \"session.disable_cpu_ep_fallback|1 ep.context_enable|1\" \n"
       "\t-i: Specify EP specific runtime options as key value pairs. Different runtime options available are: \n"
       "\t    [QNN only] [backend_path]: QNN backend path. e.g '/folderpath/libQnnHtp.so', '/folderpath/libQnnCpu.so'.\n"
       "\t    [QNN only] [profiling_level]: QNN profiling level, options:  'basic', 'detailed', default 'off'.\n"
+      "\t    [QNN only] [profiling_file_path]: QNN profiling file path if ETW not enabled.\n"
       "\t    [QNN only] [rpc_control_latency]: QNN rpc control latency. default to 10.\n"
       "\t    [QNN only] [vtcm_mb]: QNN VTCM size in MB. default to 0(not set).\n"
       "\t    [QNN only] [htp_performance_mode]: QNN performance mode, options: 'burst', 'balanced', 'default', 'high_performance', \n"
-      "\t    'high_power_saver', 'low_balanced', 'low_power_saver', 'power_saver', 'sustained_high_performance'. Default to 'default'. \n"
+      "\t    'high_power_saver', 'low_balanced', 'extreme_power_saver', 'low_power_saver', 'power_saver', 'sustained_high_performance'. Default to 'default'. \n"
       "\t    [QNN only] [qnn_context_priority]: QNN context priority, options: 'low', 'normal', 'normal_high', 'high'. Default to 'normal'. \n"
       "\t    0 means dump the QNN context binary into separate bin file and set the path in the Onnx skeleton model.\n"
       "\t    [QNN only] [qnn_saver_path]: QNN Saver backend path. e.g '/folderpath/libQnnSaver.so'.\n"
       "\t    [QNN only] [htp_graph_finalization_optimization_mode]: QNN graph finalization optimization mode, options: \n"
       "\t    '0', '1', '2', '3', default is '0'.\n"
+      "\t    [QNN only] [soc_model]: The SoC Model number. Refer to QNN SDK documentation for specific values. Defaults to '0' (unknown). \n"
+      "\t    [QNN only] [htp_arch]: The minimum HTP architecture. The driver will use ops compatible with this architecture. \n"
+      "\t    Options are '0', '68', '69', '73', '75'. Defaults to '0' (none). \n"
+      "\t    [QNN only] [device_id]: The ID of the device to use when setting 'htp_arch'. Defaults to '0' (for single device). \n"
+      "\t    [QNN only] [enable_htp_fp16_precision]: Enable the HTP_FP16 precision so that the float32 model will be inferenced with fp16 precision. \n"
+      "\t    Otherwise, it will be fp32 precision. Works for float32 model for HTP backend. Defaults to '1' (with FP16 precision.). \n"
+      "\t    [QNN only] [offload_graph_io_quantization]: Offload graph input quantization and graph output dequantization to another EP (typically CPU EP). \n"
+      "\t    Defaults to '0' (QNN EP handles the graph I/O quantization and dequantization). \n"
       "\t [Usage]: -e <provider_name> -i '<key1>|<value1> <key2>|<value2>' \n\n"
       "\t [Example] [For QNN EP] -e qnn -i \"profiling_level|detailed backend_path|/folderpath/libQnnCpu.so\" \n\n"
       "\t    [SNPE only] [runtime]: SNPE runtime, options: 'CPU', 'GPU', 'GPU_FLOAT16', 'DSP', 'AIP_FIXED_TF'. \n"
@@ -110,6 +129,39 @@ static TestTolerances LoadTestTolerances(bool enable_cuda, bool enable_openvino,
       overrides_json["atol_default"], overrides_json["rtol_default"], absolute_overrides, relative_overrides);
 }
 
+static bool ParseSessionConfigs(const std::string& configs_string,
+                                std::unordered_map<std::string, std::string>& session_configs) {
+  std::istringstream ss(configs_string);
+  std::string token;
+
+  while (ss >> token) {
+    if (token == "") {
+      continue;
+    }
+
+    std::string_view token_sv(token);
+
+    auto pos = token_sv.find("|");
+    if (pos == std::string_view::npos || pos == 0 || pos == token_sv.length()) {
+      // Error: must use a '|' to separate the key and value for session configuration entries.
+      return false;
+    }
+
+    std::string key(token_sv.substr(0, pos));
+    std::string value(token_sv.substr(pos + 1));
+
+    auto it = session_configs.find(key);
+    if (it != session_configs.end()) {
+      // Error: specified duplicate session configuration entry: {key}
+      return false;
+    }
+
+    session_configs.insert(std::make_pair(std::move(key), std::move(value)));
+  }
+
+  return true;
+}
+
 #ifdef _WIN32
 int GetNumCpuCores() {
   SYSTEM_LOGICAL_PROCESSOR_INFORMATION buffer[256];
@@ -158,6 +210,7 @@ int real_main(int argc, char* argv[], Ort::Env& env) {
   bool enable_mem_pattern = true;
   bool enable_qnn = false;
   bool enable_nnapi = false;
+  bool enable_vsinpu = false;
   bool enable_coreml = false;
   bool enable_snpe = false;
   bool enable_dml = false;
@@ -165,6 +218,7 @@ int real_main(int argc, char* argv[], Ort::Env& env) {
   bool enable_armnn = false;
   bool enable_rocm = false;
   bool enable_migraphx = false;
+  bool enable_webgpu = false;
   bool enable_xnnpack = false;
   bool override_tolerance = false;
   double atol = 1e-5;
@@ -174,6 +228,7 @@ int real_main(int argc, char* argv[], Ort::Env& env) {
   bool user_graph_optimization_level_set = false;
   bool set_denormal_as_zero = false;
   std::basic_string<ORTCHAR_T> ep_runtime_config_string;
+  std::unordered_map<std::string, std::string> session_config_entries;
   std::string provider_name = "cpu";
 
   OrtLoggingLevel logging_level = ORT_LOGGING_LEVEL_ERROR;
@@ -184,7 +239,7 @@ int real_main(int argc, char* argv[], Ort::Env& env) {
   bool pause = false;
   {
     int ch;
-    while ((ch = getopt(argc, argv, ORT_TSTR("Ac:hj:Mn:r:e:t:a:xvo:d:i:pzfb"))) != -1) {
+    while ((ch = getopt(argc, argv, ORT_TSTR("Ac:hj:Mn:r:e:t:a:xvo:d:C:i:pzfb"))) != -1) {
       switch (ch) {
         case 'A':
           enable_cpu_mem_arena = false;
@@ -237,6 +292,8 @@ int real_main(int argc, char* argv[], Ort::Env& env) {
             enable_qnn = true;
           } else if (!CompareCString(optarg, ORT_TSTR("nnapi"))) {
             enable_nnapi = true;
+          } else if (!CompareCString(optarg, ORT_TSTR("vsinpu"))) {
+            enable_vsinpu = true;
           } else if (!CompareCString(optarg, ORT_TSTR("coreml"))) {
             enable_coreml = true;
           } else if (!CompareCString(optarg, ORT_TSTR("snpe"))) {
@@ -251,6 +308,8 @@ int real_main(int argc, char* argv[], Ort::Env& env) {
             enable_rocm = true;
           } else if (!CompareCString(optarg, ORT_TSTR("migraphx"))) {
             enable_migraphx = true;
+          } else if (!CompareCString(optarg, ORT_TSTR("webgpu"))) {
+            enable_webgpu = true;
           } else if (!CompareCString(optarg, ORT_TSTR("xnnpack"))) {
             enable_xnnpack = true;
           } else {
@@ -307,6 +366,11 @@ int real_main(int argc, char* argv[], Ort::Env& env) {
             return -1;
           }
           break;
+        case 'C':
+          if (!ParseSessionConfigs(ToUTF8String(optarg), session_config_entries)) {
+            return -1;
+          }
+          break;
         case 'i':
           ep_runtime_config_string = optarg;
           break;
@@ -335,11 +399,6 @@ int real_main(int argc, char* argv[], Ort::Env& env) {
     logging_level = ORT_LOGGING_LEVEL_VERBOSE;
   }
 
-  if (concurrent_session_runs > 1 && repeat_count > 1) {
-    fprintf(stderr, "when you use '-r [repeat]', please set '-c' to 1\n");
-    usage();
-    return -1;
-  }
   argc -= optind;
   argv += optind;
   if (argc < 1) {
@@ -395,17 +454,27 @@ int real_main(int argc, char* argv[], Ort::Env& env) {
 
     if (ep_context_enable)
       sf.AddConfigEntry(kOrtSessionOptionEpContextEnable, "1");
-    if (disable_ep_context_embed_mode)
+    if (disable_ep_context_embed_mode) {
       sf.AddConfigEntry(kOrtSessionOptionEpContextEmbedMode, "0");
+    } else {
+      sf.AddConfigEntry(kOrtSessionOptionEpContextEmbedMode, "1");
+    }
+
+    for (auto& it : session_config_entries) {
+      sf.AddConfigEntry(it.first.c_str(), it.second.c_str());
+    }
 
     if (enable_tensorrt) {
 #ifdef USE_TENSORRT
-      OrtCUDAProviderOptions cuda_options;
+      Ort::ThrowOnError(OrtSessionOptionsAppendExecutionProvider_Tensorrt(sf, device_id));
+#ifdef USE_CUDA
+      OrtCUDAProviderOptionsV2 cuda_options;
       cuda_options.device_id = device_id;
       cuda_options.do_copy_in_default_stream = true;
+      cuda_options.use_tf32 = false;
       // TODO: Support arena configuration for users of test runner
-      Ort::ThrowOnError(OrtSessionOptionsAppendExecutionProvider_Tensorrt(sf, device_id));
-      sf.AppendExecutionProvider_CUDA(cuda_options);
+      sf.AppendExecutionProvider_CUDA_V2(cuda_options);
+#endif
 #else
       fprintf(stderr, "TensorRT is not supported in this build");
       return -1;
@@ -423,10 +492,12 @@ int real_main(int argc, char* argv[], Ort::Env& env) {
     }
     if (enable_cuda) {
 #ifdef USE_CUDA
-      OrtCUDAProviderOptions cuda_options;
+      OrtCUDAProviderOptionsV2 cuda_options;
+      cuda_options.device_id = device_id;
       cuda_options.do_copy_in_default_stream = true;
+      cuda_options.use_tf32 = false;
       // TODO: Support arena configuration for users of test runner
-      sf.AppendExecutionProvider_CUDA(cuda_options);
+      sf.AppendExecutionProvider_CUDA_V2(cuda_options);
 #else
       fprintf(stderr, "CUDA is not supported in this build");
       return -1;
@@ -470,9 +541,9 @@ int real_main(int argc, char* argv[], Ort::Env& env) {
         std::string key(token.substr(0, pos));
         std::string value(token.substr(pos + 1));
 
-        if (key == "backend_path") {
+        if (key == "backend_path" || key == "profiling_file_path") {
           if (value.empty()) {
-            ORT_THROW("Please provide the QNN backend path.");
+            ORT_THROW("Please provide the valid file path.");
           }
         } else if (key == "qnn_context_embed_mode") {
           if (value != "0") {
@@ -483,11 +554,11 @@ int real_main(int argc, char* argv[], Ort::Env& env) {
           if (supported_profiling_level.find(value) == supported_profiling_level.end()) {
             ORT_THROW("Supported profiling_level: off, basic, detailed");
           }
-        } else if (key == "rpc_control_latency" || key == "vtcm_mb") {
+        } else if (key == "rpc_control_latency" || key == "vtcm_mb" || key == "soc_model" || key == "device_id") {
           // no validation
         } else if (key == "htp_performance_mode") {
           std::set<std::string> supported_htp_perf_mode = {"burst", "balanced", "default", "high_performance",
-                                                           "high_power_saver", "low_balanced", "low_power_saver",
+                                                           "high_power_saver", "low_balanced", "extreme_power_saver", "low_power_saver",
                                                            "power_saver", "sustained_high_performance"};
           if (supported_htp_perf_mode.find(value) == supported_htp_perf_mode.end()) {
             std::ostringstream str_stream;
@@ -512,10 +583,29 @@ int real_main(int argc, char* argv[], Ort::Env& env) {
             std::string str = str_stream.str();
             ORT_THROW("Wrong value for htp_graph_finalization_optimization_mode. select from: " + str);
           }
+        } else if (key == "htp_arch") {
+          std::unordered_set<std::string> supported_htp_archs = {"0", "68", "69", "73", "75"};
+          if (supported_htp_archs.find(value) == supported_htp_archs.end()) {
+            std::ostringstream str_stream;
+            std::copy(supported_htp_archs.begin(), supported_htp_archs.end(),
+                      std::ostream_iterator<std::string>(str_stream, ","));
+            std::string str = str_stream.str();
+            ORT_THROW("Wrong value for htp_arch. select from: " + str);
+          }
+        } else if (key == "enable_htp_fp16_precision" || key == "offload_graph_io_quantization") {
+          std::unordered_set<std::string> supported_options = {"0", "1"};
+          if (supported_options.find(value) == supported_options.end()) {
+            std::ostringstream str_stream;
+            std::copy(supported_options.begin(), supported_options.end(),
+                      std::ostream_iterator<std::string>(str_stream, ","));
+            std::string str = str_stream.str();
+            ORT_THROW("Wrong value for ", key, ". select from: ", str);
+          }
         } else {
           ORT_THROW(R"(Wrong key type entered. Choose from options: ['backend_path',
-'profiling_level', 'rpc_control_latency', 'vtcm_mb', 'htp_performance_mode',
-'qnn_saver_path', 'htp_graph_finalization_optimization_mode', 'qnn_context_priority'])");
+'profiling_level', 'profiling_file_path', 'rpc_control_latency', 'vtcm_mb', 'htp_performance_mode',
+'qnn_saver_path', 'htp_graph_finalization_optimization_mode', 'qnn_context_priority',
+'soc_model', 'htp_arch', 'device_id', 'enable_htp_fp16_precision', 'offload_graph_io_quantization'])");
         }
 
         qnn_options[key] = value;
@@ -534,9 +624,17 @@ int real_main(int argc, char* argv[], Ort::Env& env) {
       return -1;
 #endif
     }
+    if (enable_vsinpu) {
+#ifdef USE_VSINPU
+      Ort::ThrowOnError(OrtSessionOptionsAppendExecutionProvider_VSINPU(sf));
+#else
+      fprintf(stderr, "VSINPU is not supported in this build");
+      return -1;
+#endif
+    }
     if (enable_coreml) {
 #ifdef USE_COREML
-      Ort::ThrowOnError(OrtSessionOptionsAppendExecutionProvider_CoreML(sf, 0));
+      sf.AppendExecutionProvider("CoreML", {});
 #else
       fprintf(stderr, "CoreML is not supported in this build");
       return -1;
@@ -612,7 +710,7 @@ select from 'TF8', 'TF16', 'UINT8', 'FLOAT', 'ITENSOR'. \n)");
     }
     if (enable_acl) {
 #ifdef USE_ACL
-      Ort::ThrowOnError(OrtSessionOptionsAppendExecutionProvider_ACL(sf, enable_cpu_mem_arena ? 1 : 0));
+      Ort::ThrowOnError(OrtSessionOptionsAppendExecutionProvider_ACL(sf, false));
 #else
       fprintf(stderr, "ACL is not supported in this build");
       return -1;
@@ -651,6 +749,15 @@ select from 'TF8', 'TF16', 'UINT8', 'FLOAT', 'ITENSOR'. \n)");
       sf.AppendExecutionProvider("XNNPACK", {});
 #else
       fprintf(stderr, "XNNPACK is not supported in this build");
+      return -1;
+#endif
+    }
+
+    if (enable_webgpu) {
+#ifdef USE_WEBGPU
+      sf.AppendExecutionProvider("WebGPU", {});
+#else
+      fprintf(stderr, "WebGPU is not supported in this build");
       return -1;
 #endif
     }
@@ -783,7 +890,9 @@ select from 'TF8', 'TF16', 'UINT8', 'FLOAT', 'ITENSOR'. \n)");
         ORT_TSTR("sce_NCd1d2d3_sum_weight_high_ii"),
         ORT_TSTR("sce_NCd1d2d3_sum_weight_high_ii_expanded"),
         ORT_TSTR("sce_none_weights_log_prob_expanded"),
-        ORT_TSTR("sce_none_weights_expanded")};
+        ORT_TSTR("sce_none_weights_expanded"),
+        ORT_TSTR("convtranspose_3d"),
+        ORT_TSTR("gather_elements_negative_indices")};
 
     std::unordered_set<std::basic_string<ORTCHAR_T>> all_disabled_tests(std::begin(immutable_broken_tests), std::end(immutable_broken_tests));
 

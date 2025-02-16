@@ -209,7 +209,7 @@ std::unique_ptr<Tensor> EinsumTypedComputeProcessor<T>::PairwiseOperandProcess(c
     if (current_left && IsTransposeReshapeForEinsum(left_permutation,
                                                     current_left->Shape().GetDims(),
                                                     reshaped_dims)) {
-      // This can be done because curent_* tensors (if they exist) and output tensors are
+      // This can be done because current_* tensors (if they exist) and output tensors are
       // intermediate tensors and cannot be input tensors to the Einsum node itself
       // (which are immutable).
       // Covered by ExplicitEinsumAsTensorContractionReshapeLeft.
@@ -363,7 +363,6 @@ Status EinsumTypedComputeProcessor<T>::Run() {
   {
     TensorShapeVector reduced_dims;
     TensorShapeVector preserved_dims;                                           // dims which were not reduced
-    TensorShapeVector preserved_shape;                                          // shape pertaining to only the dims that were preserved (not reduced)
     reduced_dims.reserve(onnxruntime::narrow<size_t>(num_subscript_labels));    // num_subscript_labels is the upper bound. No harm in over-reserving.
     preserved_dims.reserve(onnxruntime::narrow<size_t>(num_subscript_labels));  // num_subscript_labels is the upper bound. No harm in over-reserving.
 

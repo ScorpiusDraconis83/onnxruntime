@@ -1,4 +1,5 @@
 ##### start trigger Don't edit it manually, Please do edit set-trigger-rules.py ####
+### please do rerun set-trigger-rules.py ###
 trigger:
   branches:
     include:
@@ -36,7 +37,7 @@ variables:
   - name: render
     value: 109
   - name: RocmVersion
-    value: 6.0
+    value: 6.2.3
 
 jobs:
 - job: Linux_Build
@@ -46,13 +47,10 @@ jobs:
     TODAY: $[format('{0:dd}{0:MM}{0:yyyy}', pipeline.startTime)]
   workspace:
     clean: all
-  pool: onnxruntime-Ubuntu2004-AMD-CPU
-  timeoutInMinutes: 120
+  pool: onnxruntime-Ubuntu2204-AMD-CPU
+  timeoutInMinutes: 240
 
   steps:
-  - task: mspremier.PostBuildCleanup.PostBuildCleanup-task.PostBuildCleanup@3
-    displayName: 'Clean Agent Directories'
-    condition: always()
 
   - checkout: self
     clean: true
@@ -83,7 +81,7 @@ jobs:
   - task: CmdLine@2
     inputs:
       script: |
-        docker run --rm \
+        docker run -e SYSTEM_COLLECTIONURI --rm \
           --security-opt seccomp=unconfined \
           --shm-size=1024m \
           --user $UID:$(id -g $USER) \
@@ -109,10 +107,11 @@ jobs:
               --rocm_version=$(RocmVersion) \
               --rocm_home /opt/rocm \
               --nccl_home /opt/rocm \
+              --enable_nccl \
               --update \
               --build_dir /build \
               --build \
-              --parallel \
+              --parallel --use_vcpkg \
               --build_wheel \
               --skip_submodule_sync \
               --use_cache \
@@ -167,7 +166,7 @@ jobs:
   - task: CmdLine@2
     inputs:
       script: |
-        docker run --rm \
+        docker run -e SYSTEM_COLLECTIONURI --rm \
           --security-opt seccomp=unconfined \
           --shm-size=1024m \
           --device=/dev/kfd \

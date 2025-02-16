@@ -1,4 +1,5 @@
 ##### start trigger Don't edit it manually, Please do edit set-trigger-rules.py ####
+### please do rerun set-trigger-rules.py ###
 trigger:
   branches:
     include:
@@ -32,22 +33,22 @@ parameters:
 - name: QnnSdk
   displayName: QNN SDK version
   type: string
-  default: qnn-v2.17.0.231124
+  default: 2.31.0.250130
 
 jobs:
   - job: Build_QNN_EP
-    pool: onnxruntime-qnn-ubuntu-2004-cpu
+    pool: onnxruntime-qnn-ubuntu-2204-cpu
     timeoutInMinutes: 60
     workspace:
       clean: all
-
-    variables:
-      - name: QNN_SDK_ROOT
-        value: /data/qnnsdk/${{parameters.QnnSdk}}
-
+    strategy:
+      matrix:
+        SHARED_LIB:
+          QnnLibKind: 'shared_lib'
+        STATIC_LIB:
+          QnnLibKind: 'static_lib'
     steps:
       - script: |
-          ls /data/qnnsdk
           ls -R /data/qnn_test_data
         displayName: Check QNN test data
 
@@ -59,26 +60,34 @@ jobs:
       - script: sudo apt-get update -y && sudo apt-get install -y coreutils ninja-build
         displayName: Install coreutils and ninja
 
+      - template: templates/jobs/download_linux_qnn_sdk.yml
+        parameters:
+          QnnSDKVersion: ${{ parameters.QnnSdk }}
+
       - script: |
           python3 tools/ci_build/build.py \
             --build_dir build \
             --config Release \
-            --parallel \
-            --use_qnn \
-            --qnn_home $(QNN_SDK_ROOT) \
+            --use_binskim_compliant_compile_flags \
+            --build_java \
+            --build_shared_lib \
+            --use_qnn $(QnnLibKind) \
+            --qnn_home $(QnnSDKRootDir) \
             --cmake_generator=Ninja \
-            --skip_tests
+            --update --build --parallel --use_vcpkg
         displayName: Build QNN EP
 
       - script: |
           python3 tools/ci_build/build.py \
             --build_dir build \
             --config Release \
-            --test \
-            --qnn_home $(QNN_SDK_ROOT) \
+            --use_binskim_compliant_compile_flags \
+            --build_java \
+            --build_shared_lib \
+            --use_qnn $(QnnLibKind) \
+            --qnn_home $(QnnSDKRootDir) \
             --cmake_generator=Ninja \
-            --skip_submodule_sync \
-            --ctest_path ""
+            --test --use_vcpkg
         displayName: Run unit tests
 
       - task: CmdLine@2
@@ -86,7 +95,7 @@ jobs:
         inputs:
           script: |
             ./build/Release/onnx_test_runner -e qnn \
-              -v -j 1 -i "backend_path|$(QNN_SDK_ROOT)/lib/x86_64-linux-clang/libQnnCpu.so" \
+              -v -j 1 -i "backend_path|$(QnnSDKRootDir)/lib/x86_64-linux-clang/libQnnCpu.so" \
               cmake/external/onnx/onnx/backend/test/data/node
 
       - task: CmdLine@2
@@ -94,7 +103,7 @@ jobs:
         inputs:
           script: |
             ./build/Release/onnx_test_runner -e qnn \
-              -v -j 1 -i "backend_path|$(QNN_SDK_ROOT)/lib/x86_64-linux-clang/libQnnCpu.so" \
+              -v -j 1 -i "backend_path|$(QnnSDKRootDir)/lib/x86_64-linux-clang/libQnnCpu.so" \
               /data/float32_models
 
       - task: CmdLine@2
@@ -102,7 +111,7 @@ jobs:
         inputs:
           script: |
             ./build/Release/onnx_test_runner -e qnn \
-              -v -j 1 -i "backend_path|$(QNN_SDK_ROOT)/lib/x86_64-linux-clang/libQnnHtp.so" \
+              -v -j 1 -i "backend_path|$(QnnSDKRootDir)/lib/x86_64-linux-clang/libQnnHtp.so" \
               /data/qdq_models
 
       - task: CmdLine@2
@@ -110,5 +119,5 @@ jobs:
         inputs:
           script: |
             ./build/Release/onnx_test_runner -e qnn \
-              -v -f -j 1 -i "backend_path|$(QNN_SDK_ROOT)/lib/x86_64-linux-clang/libQnnHtp.so" \
+              -v -f -j 1 -i "backend_path|$(QnnSDKRootDir)/lib/x86_64-linux-clang/libQnnHtp.so" \
               /data/qdq_models/mobilenetv2-1.0_add_transpose_quant

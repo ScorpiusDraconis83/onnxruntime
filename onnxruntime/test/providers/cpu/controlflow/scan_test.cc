@@ -155,7 +155,7 @@ static common::Status CreateSubgraph(Graph& graph, RunOptions& options, const st
     graph.AddNode("add", "Add", "Add 1 to the loop state", inputs, outputs);
   }
 
-  // subgraph with multiple inputs and outputs to test variadic behaviour.
+  // subgraph with multiple inputs and outputs to test variadic behavior.
   // 2 inputs of 2 that are concatenated and then split into 4 outputs of 1
 
   // Concat node
@@ -248,10 +248,9 @@ static common::Status CreateSubgraph(Graph& graph, RunOptions& options, const st
   auto status = graph.Resolve();
 
   if (failure_message.empty()) {
-    EXPECT_EQ(status, Status::OK());
+    EXPECT_STATUS_OK(status);
   } else {
-    EXPECT_TRUE(!status.IsOK());
-    EXPECT_THAT(status.ErrorMessage(), testing::HasSubstr(failure_message));
+    EXPECT_STATUS_NOT_OK_AND_HAS_SUBSTR(status, failure_message);
   }
 
   return status;

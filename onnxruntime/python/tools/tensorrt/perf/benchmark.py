@@ -607,7 +607,7 @@ def validate(all_ref_outputs, all_outputs, rtol, atol, percent_mismatch):
             output = outputs[j]
 
             # Compare the results with reference outputs
-            for ref_o, o in zip(ref_output, output):
+            for ref_o, o in zip(ref_output, output, strict=False):
                 # abs(desired-actual) < rtol * abs(desired) + atol
                 try:
                     np.testing.assert_allclose(ref_o, o, rtol, atol)
@@ -790,7 +790,7 @@ def skip_ep(model_name, ep, model_to_fail_ep):
 
     # if ep in fail_ep_list and fail_ep_list[ep] == "runtime error":
     if ep in fail_ep_list:
-        logger.info("Skip testing " + model_name + " using " + ep + " since it has some issues.")
+        logger.info("Skip testing " + model_name + " using " + ep + " since it has some issues.")  # noqa: G003
         return True
 
     return False
@@ -925,8 +925,8 @@ def find_model_path(path):
 
     logger.info(target_model_path)
     if len(target_model_path) > 1:
-        logger.error("We expect to find only one model in " + path)
-        raise
+        logger.error("We expect to find only one model in %s", path)
+        raise RuntimeError
 
     return target_model_path[0]
 
@@ -1007,7 +1007,7 @@ def parse_models_info_from_file(root_dir, path, models):
                 models[row["model_name"]] = {}
             else:
                 logger.error("Model name must be provided in models_info.json")
-                raise
+                raise RuntimeError
 
             model = models[row["model_name"]]
 
@@ -1018,19 +1018,19 @@ def parse_models_info_from_file(root_dir, path, models):
                     model["working_directory"] = os.path.join(root_working_directory, row["working_directory"])
             else:
                 logger.error("Model path must be provided in models_info.json")
-                raise
+                raise RuntimeError
 
             if "model_path" in row:
                 model["model_path"] = row["model_path"]
             else:
                 logger.error("Model path must be provided in models_info.json")
-                raise
+                raise RuntimeError
 
             if "test_data_path" in row:
                 model["test_data_path"] = row["test_data_path"]
             else:
                 logger.error("Test data path must be provided in models_info.json")
-                raise
+                raise RuntimeError
 
             if "model_path_fp16" in row:
                 model["model_path_fp16"] = row["model_path_fp16"]
@@ -1575,15 +1575,13 @@ def output_metrics(model_to_metrics, csv_filename):
         for value in results:
             row = [
                 value["model_name"],
-                value["ratio_of_ops_in_cuda_not_fallback_cpu"]
-                if "ratio_of_ops_in_cuda_not_fallback_cpu" in value
-                else "  ",
-                value["total_ops_in_trt"] if "total_ops_in_trt" in value else "  ",
-                value["total_ops"] if "total_ops" in value else "  ",
-                value["ratio_of_ops_in_trt"] if "ratio_of_ops_in_trt" in value else "  ",
-                value["total_trt_execution_time"] if "total_trt_execution_time" in value else "  ",
-                value["total_execution_time"] if "total_execution_time" in value else "  ",
-                value["ratio_of_execution_time_in_trt"] if "ratio_of_execution_time_in_trt" in value else "  ",
+                value.get("ratio_of_ops_in_cuda_not_fallback_cpu", "  "),
+                value.get("total_ops_in_trt", "  "),
+                value.get("total_ops", "  "),
+                value.get("ratio_of_ops_in_trt", "  "),
+                value.get("total_trt_execution_time", "  "),
+                value.get("total_execution_time", "  "),
+                value.get("ratio_of_execution_time_in_trt", "  "),
             ]
             csv_writer.writerow(row)
 

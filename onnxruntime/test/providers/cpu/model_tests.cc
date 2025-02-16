@@ -1,8 +1,15 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
+// SPDX-FileCopyrightText: Copyright 2024 Arm Limited and/or its affiliates <open-source-office@arm.com>
 // Licensed under the MIT License.
 
 #include <iostream>
 #include <iterator>
+#include <string>
+#include <codecvt>
+#include <locale>
+#include <filesystem>
+#include <utility>
+#include <unordered_map>
 #include <gtest/gtest.h>
 
 #include "core/session/onnxruntime_c_api.h"
@@ -15,9 +22,6 @@
 #include <core/platform/path_lib.h>
 #include "default_providers.h"
 #include "test/onnx/TestCase.h"
-#include <string>
-#include <codecvt>
-#include <locale>
 
 #ifdef USE_DNNL
 #include "core/providers/dnnl/dnnl_provider_factory.h"
@@ -25,6 +29,10 @@
 
 #ifdef USE_NNAPI
 #include "core/providers/nnapi/nnapi_provider_factory.h"
+#endif
+
+#ifdef USE_VSINPU
+#include "core/providers/vsinpu/vsinpu_provider_factory.h"
 #endif
 
 #ifdef USE_RKNPU
@@ -39,13 +47,14 @@
 #include "core/providers/armnn/armnn_provider_factory.h"
 #endif
 
+#include "test/common/cuda_op_test_utils.h"
+
 // test infrastructure
 #include "test/onnx/testenv.h"
 #include "test/onnx/TestCase.h"
 #include "test/compare_ortvalue.h"
 #include "test/onnx/heap_buffer.h"
 #include "test/onnx/onnx_model_info.h"
-#include "test/onnx/callback.h"
 #include "test/onnx/testcase_request.h"
 
 extern std::unique_ptr<Ort::Env> ort_env;
@@ -87,7 +96,8 @@ TEST_P(ModelTest, Run) {
 
   // when cuda or openvino is enabled, set it to a larger value for resolving random MNIST test failure
   if (model_path.find(ORT_TSTR("_MNIST")) > 0) {
-    if (provider_name == "cuda" || provider_name == "openvino") {
+    if (provider_name == "cuda" || provider_name == "openvino" || provider_name == "rocm") {
+      per_sample_tolerance = 2.5e-2;
       relative_per_sample_tolerance = 1e-2;
     }
   }
@@ -173,12 +183,14 @@ TEST_P(ModelTest, Run) {
         ASSERT_ORT_STATUS_OK(OrtApis::CreateCUDAProviderOptions(&cuda_options));
         std::unique_ptr<OrtCUDAProviderOptionsV2, decltype(&OrtApis::ReleaseCUDAProviderOptions)> rel_cuda_options(
             cuda_options, &OrtApis::ReleaseCUDAProviderOptions);
-        std::vector<const char*> keys{"device_id"};
 
+        std::vector<const char*> keys{"device_id", "use_tf32"};
         std::vector<const char*> values;
         std::string device_id = Env::Default().GetEnvironmentVar("ONNXRUNTIME_TEST_GPU_DEVICE_ID");
         values.push_back(device_id.empty() ? "0" : device_id.c_str());
-        ASSERT_ORT_STATUS_OK(OrtApis::UpdateCUDAProviderOptions(cuda_options, keys.data(), values.data(), 1));
+        values.push_back("0");
+        ASSERT_ORT_STATUS_OK(OrtApis::UpdateCUDAProviderOptions(cuda_options, keys.data(), values.data(), 2));
+
         ortso.AppendExecutionProvider_CUDA_V2(*cuda_options);
       } else if (provider_name == "rocm") {
         OrtROCMProviderOptions ep_options;
@@ -210,6 +222,14 @@ TEST_P(ModelTest, Run) {
         ASSERT_ORT_STATUS_OK(OrtApis::CreateCUDAProviderOptions(&cuda_options));
         std::unique_ptr<OrtCUDAProviderOptionsV2, decltype(&OrtApis::ReleaseCUDAProviderOptions)> rel_cuda_options(
             cuda_options, &OrtApis::ReleaseCUDAProviderOptions);
+
+        std::vector<const char*> keys{"device_id", "use_tf32"};
+        std::vector<const char*> values;
+        std::string device_id = Env::Default().GetEnvironmentVar("ONNXRUNTIME_TEST_GPU_DEVICE_ID");
+        values.push_back(device_id.empty() ? "0" : device_id.c_str());
+        values.push_back("0");
+        ASSERT_ORT_STATUS_OK(OrtApis::UpdateCUDAProviderOptions(cuda_options, keys.data(), values.data(), 2));
+
         ortso.AppendExecutionProvider_CUDA_V2(*cuda_options);
       } else if (provider_name == "migraphx") {
         OrtMIGraphXProviderOptions ep_options;
@@ -223,6 +243,11 @@ TEST_P(ModelTest, Run) {
         ASSERT_ORT_STATUS_OK(OrtSessionOptionsAppendExecutionProvider_Nnapi(ortso, 0));
       }
 #endif
+#ifdef USE_VSINPU
+      else if (provider_name == "vsinpu") {
+        ASSERT_ORT_STATUS_OK(OrtSessionOptionsAppendExecutionProvider_VSINPU(ortso));
+      }
+#endif
 #ifdef USE_RKNPU
       else if (provider_name == "rknpu") {
         ASSERT_ORT_STATUS_OK(OrtSessionOptionsAppendExecutionProvider_Rknpu(ortso));
@@ -230,12 +255,17 @@ TEST_P(ModelTest, Run) {
 #endif
 #ifdef USE_ACL
       else if (provider_name == "acl") {
-        ASSERT_ORT_STATUS_OK(OrtSessionOptionsAppendExecutionProvider_ACL(ortso, 0));
+        ASSERT_ORT_STATUS_OK(OrtSessionOptionsAppendExecutionProvider_ACL(ortso, false));
       }
 #endif
 #ifdef USE_ARMNN
       else if (provider_name == "armnn") {
         ASSERT_ORT_STATUS_OK(OrtSessionOptionsAppendExecutionProvider_ArmNN(ortso));
+      }
+#endif
+#ifdef USE_XNNPACK
+      else if (provider_name == "xnnpack") {
+        ortso.AppendExecutionProvider("XNNPACK");
       }
 #endif
       OrtSession* ort_session;
@@ -361,46 +391,50 @@ TEST_P(ModelTest, Run) {
 }
 
 using ORT_STRING_VIEW = std::basic_string_view<ORTCHAR_T>;
-static ORT_STRING_VIEW opset7 = ORT_TSTR("opset7");
-static ORT_STRING_VIEW opset8 = ORT_TSTR("opset8");
-static ORT_STRING_VIEW opset9 = ORT_TSTR("opset9");
-static ORT_STRING_VIEW opset10 = ORT_TSTR("opset10");
-static ORT_STRING_VIEW opset11 = ORT_TSTR("opset11");
-static ORT_STRING_VIEW opset12 = ORT_TSTR("opset12");
-static ORT_STRING_VIEW opset13 = ORT_TSTR("opset13");
-static ORT_STRING_VIEW opset14 = ORT_TSTR("opset14");
-static ORT_STRING_VIEW opset15 = ORT_TSTR("opset15");
-static ORT_STRING_VIEW opset16 = ORT_TSTR("opset16");
-static ORT_STRING_VIEW opset17 = ORT_TSTR("opset17");
-static ORT_STRING_VIEW opset18 = ORT_TSTR("opset18");
+static constexpr ORT_STRING_VIEW opset7 = ORT_TSTR("opset7");
+static constexpr ORT_STRING_VIEW opset8 = ORT_TSTR("opset8");
+static constexpr ORT_STRING_VIEW opset9 = ORT_TSTR("opset9");
+static constexpr ORT_STRING_VIEW opset10 = ORT_TSTR("opset10");
+static constexpr ORT_STRING_VIEW opset11 = ORT_TSTR("opset11");
+static constexpr ORT_STRING_VIEW opset12 = ORT_TSTR("opset12");
+static constexpr ORT_STRING_VIEW opset13 = ORT_TSTR("opset13");
+static constexpr ORT_STRING_VIEW opset14 = ORT_TSTR("opset14");
+static constexpr ORT_STRING_VIEW opset15 = ORT_TSTR("opset15");
+static constexpr ORT_STRING_VIEW opset16 = ORT_TSTR("opset16");
+static constexpr ORT_STRING_VIEW opset17 = ORT_TSTR("opset17");
+static constexpr ORT_STRING_VIEW opset18 = ORT_TSTR("opset18");
 // TODO: enable opset19 tests
-// static ORT_STRING_VIEW opset19 = ORT_TSTR("opset19");
+// static constexpr ORT_STRING_VIEW opset19 = ORT_TSTR("opset19");
 
-static ORT_STRING_VIEW provider_name_cpu = ORT_TSTR("cpu");
-static ORT_STRING_VIEW provider_name_tensorrt = ORT_TSTR("tensorrt");
+static constexpr ORT_STRING_VIEW provider_name_cpu = ORT_TSTR("cpu");
+static constexpr ORT_STRING_VIEW provider_name_tensorrt = ORT_TSTR("tensorrt");
 #ifdef USE_MIGRAPHX
-static ORT_STRING_VIEW provider_name_migraphx = ORT_TSTR("migraphx");
+static constexpr ORT_STRING_VIEW provider_name_migraphx = ORT_TSTR("migraphx");
 #endif
-static ORT_STRING_VIEW provider_name_openvino = ORT_TSTR("openvino");
-static ORT_STRING_VIEW provider_name_cuda = ORT_TSTR("cuda");
-#ifdef USE_ROCM
-static ORT_STRING_VIEW provider_name_rocm = ORT_TSTR("rocm");
-#endif
-static ORT_STRING_VIEW provider_name_dnnl = ORT_TSTR("dnnl");
+static constexpr ORT_STRING_VIEW provider_name_openvino = ORT_TSTR("openvino");
+static constexpr ORT_STRING_VIEW provider_name_cuda = ORT_TSTR("cuda");
+static constexpr ORT_STRING_VIEW provider_name_rocm = ORT_TSTR("rocm");
+static constexpr ORT_STRING_VIEW provider_name_dnnl = ORT_TSTR("dnnl");
 // For any non-Android system, NNAPI will only be used for ort model converter
 #if defined(USE_NNAPI) && defined(__ANDROID__)
-static ORT_STRING_VIEW provider_name_nnapi = ORT_TSTR("nnapi");
+static constexpr ORT_STRING_VIEW provider_name_nnapi = ORT_TSTR("nnapi");
+#endif
+#ifdef USE_VSINPU
+static ORT_STRING_VIEW provider_name_vsinpu = ORT_TSTR("vsinpu");
 #endif
 #ifdef USE_RKNPU
-static ORT_STRING_VIEW provider_name_rknpu = ORT_TSTR("rknpu");
+static constexpr ORT_STRING_VIEW provider_name_rknpu = ORT_TSTR("rknpu");
 #endif
 #ifdef USE_ACL
-static ORT_STRING_VIEW provider_name_acl = ORT_TSTR("acl");
+static constexpr ORT_STRING_VIEW provider_name_acl = ORT_TSTR("acl");
 #endif
 #ifdef USE_ARMNN
-static ORT_STRING_VIEW provider_name_armnn = ORT_TSTR("armnn");
+static constexpr ORT_STRING_VIEW provider_name_armnn = ORT_TSTR("armnn");
 #endif
-static ORT_STRING_VIEW provider_name_dml = ORT_TSTR("dml");
+#ifdef USE_XNNPACK
+static constexpr ORT_STRING_VIEW provider_name_xnnpack = ORT_TSTR("xnnpack");
+#endif
+static constexpr ORT_STRING_VIEW provider_name_dml = ORT_TSTR("dml");
 
 ::std::vector<::std::basic_string<ORTCHAR_T>> GetParameterStrings() {
   // Map key is provider name(CPU, CUDA, etc). Value is the ONNX node tests' opsets to run.
@@ -410,7 +444,7 @@ static ORT_STRING_VIEW provider_name_dml = ORT_TSTR("dml");
   // The other EPs can choose which opsets to test.
   // If an EP doesn't have any CI build pipeline, then there is no need to specify any opset.
 #ifdef USE_TENSORRT
-  // tensorrt: only enable opset 14 to 17 of onnx tests
+  // tensorrt: only enable opset 12 to 17 of onnx tests
   provider_names[provider_name_tensorrt] = {opset12, opset14, opset15, opset16, opset17};
 #endif
 #ifdef USE_MIGRAPHX
@@ -432,6 +466,9 @@ static ORT_STRING_VIEW provider_name_dml = ORT_TSTR("dml");
 #if defined(USE_NNAPI) && defined(__ANDROID__)
   provider_names[provider_name_nnapi] = {opset7, opset8, opset9, opset10, opset11, opset12, opset13, opset14, opset15, opset16, opset17, opset18};
 #endif
+#ifdef USE_VSINPU
+  provider_names[provider_name_vsinpu] = {};
+#endif
 #ifdef USE_RKNPU
   provider_names[provider_name_rknpu] = {};
 #endif
@@ -443,6 +480,9 @@ static ORT_STRING_VIEW provider_name_dml = ORT_TSTR("dml");
 #endif
 #ifdef USE_DML
   provider_names[provider_name_dml] = {opset7, opset8, opset9, opset10, opset11, opset12, opset13, opset14, opset15, opset16, opset17, opset18};
+#endif
+#ifdef USE_XNNPACK
+  provider_names[provider_name_xnnpack] = {opset12, opset13, opset14, opset15, opset16, opset17, opset18};
 #endif
 
 #if defined(ENABLE_TRAINING_CORE) && defined(USE_CUDA)
@@ -491,29 +531,46 @@ static ORT_STRING_VIEW provider_name_dml = ORT_TSTR("dml");
       ORT_TSTR("operator_pow"),
   };
 
-  static const ORTCHAR_T* cuda_flaky_tests[] = {ORT_TSTR("fp16_inception_v1"),
-                                                ORT_TSTR("fp16_shufflenet"),
-                                                ORT_TSTR("fp16_tiny_yolov2"),
-                                                ORT_TSTR("candy"),
-                                                ORT_TSTR("tinyyolov3"),
-                                                ORT_TSTR("mlperf_ssd_mobilenet_300"),
-                                                ORT_TSTR("mlperf_ssd_resnet34_1200"),
-                                                ORT_TSTR("tf_inception_v1"),
-                                                ORT_TSTR("faster_rcnn"),
-                                                ORT_TSTR("split_zero_size_splits"),
-                                                ORT_TSTR("convtranspose_3d"),
-                                                ORT_TSTR("fp16_test_tiny_yolov2-Candy"),
-                                                ORT_TSTR("fp16_coreml_FNS-Candy"),
-                                                ORT_TSTR("fp16_test_tiny_yolov2"),
-                                                ORT_TSTR("fp16_test_shufflenet"),
-                                                ORT_TSTR("keras2coreml_SimpleRNN_ImageNet")};
+  static const ORTCHAR_T* cuda_rocm_flaky_tests[] = {ORT_TSTR("fp16_inception_v1"),
+                                                     ORT_TSTR("fp16_shufflenet"),
+                                                     ORT_TSTR("fp16_tiny_yolov2"),
+                                                     ORT_TSTR("candy"),
+                                                     ORT_TSTR("tinyyolov3"),
+                                                     ORT_TSTR("mlperf_ssd_mobilenet_300"),
+                                                     ORT_TSTR("mlperf_ssd_resnet34_1200"),
+                                                     ORT_TSTR("tf_inception_v1"),
+                                                     ORT_TSTR("faster_rcnn"),
+                                                     ORT_TSTR("split_zero_size_splits"),
+                                                     ORT_TSTR("convtranspose_3d"),
+                                                     ORT_TSTR("fp16_test_tiny_yolov2-Candy"),
+                                                     ORT_TSTR("fp16_coreml_FNS-Candy"),
+                                                     ORT_TSTR("fp16_test_tiny_yolov2"),
+                                                     ORT_TSTR("fp16_test_shufflenet"),
+                                                     ORT_TSTR("keras2coreml_SimpleRNN_ImageNet")};
+  // For ROCm EP, also disable the following tests due to flakiness,
+  // mainly with precision issue and random memory access fault.
+  static const ORTCHAR_T* rocm_disabled_tests[] = {ORT_TSTR("bvlc_alexnet"),
+                                                   ORT_TSTR("bvlc_reference_caffenet"),
+                                                   ORT_TSTR("bvlc_reference_rcnn_ilsvrc13"),
+                                                   ORT_TSTR("coreml_Resnet50_ImageNet"),
+                                                   ORT_TSTR("mlperf_resnet"),
+                                                   ORT_TSTR("mobilenetv2-1.0"),
+                                                   ORT_TSTR("shufflenet"),
+                                                   // models from model zoo
+                                                   ORT_TSTR("AlexNet"),
+                                                   ORT_TSTR("CaffeNet"),
+                                                   ORT_TSTR("MobileNet v2-7"),
+                                                   ORT_TSTR("R-CNN ILSVRC13"),
+                                                   ORT_TSTR("ShuffleNet-v1"),
+                                                   ORT_TSTR("version-RFB-320"),
+                                                   ORT_TSTR("version-RFB-640")};
   static const ORTCHAR_T* openvino_disabled_tests[] = {
       ORT_TSTR("tf_mobilenet_v1_1.0_224"),
       ORT_TSTR("bertsquad"),
       ORT_TSTR("yolov3"),
       ORT_TSTR("LSTM_Seq_lens_unpacked"),
       ORT_TSTR("tinyyolov3"),
-      ORT_TSTR("faster_rcnn"),
+      // ORT_TSTR("faster_rcnn"),
       ORT_TSTR("mask_rcnn"),
       ORT_TSTR("coreml_FNS-Candy_ImageNet"),
       ORT_TSTR("tf_mobilenet_v2_1.0_224"),
@@ -524,7 +581,7 @@ static ORT_STRING_VIEW provider_name_dml = ORT_TSTR("dml");
       ORT_TSTR("mlperf_ssd_resnet34_1200"),
       ORT_TSTR("candy"),
       ORT_TSTR("cntk_simple_seg"),
-      ORT_TSTR("GPT2_LM_HEAD"),
+      // ORT_TSTR("GPT2_LM_HEAD"),
       ORT_TSTR("mlperf_ssd_mobilenet_300"),
       ORT_TSTR("fp16_coreml_FNS-Candy"),
       ORT_TSTR("fp16_test_tiny_yolov2"),
@@ -598,9 +655,10 @@ static ORT_STRING_VIEW provider_name_dml = ORT_TSTR("dml");
       ORT_TSTR("SSD"),                 // needs to run symbolic shape inference shape first
       ORT_TSTR("size")                 // INVALID_ARGUMENT: Cannot find binding of given name: x
   };
-  std::vector<std::basic_string<ORTCHAR_T>> paths;
+  std::vector<std::filesystem::path> paths;
 
   for (std::pair<ORT_STRING_VIEW, std::vector<ORT_STRING_VIEW>> kvp : provider_names) {
+    const ORT_STRING_VIEW provider_name = kvp.first;
     // Setup ONNX node tests. The test data is preloaded on our CI build machines.
 #if !defined(_WIN32)
     ORT_STRING_VIEW node_test_root_path = ORT_TSTR("/data/onnx");
@@ -608,7 +666,10 @@ static ORT_STRING_VIEW provider_name_dml = ORT_TSTR("dml");
     ORT_STRING_VIEW node_test_root_path = ORT_TSTR("c:\\local\\data\\onnx");
 #endif
     for (auto p : kvp.second) {
-      paths.push_back(ConcatPathComponent(node_test_root_path, p));
+      // tensorrt ep isn't expected to pass all onnx node tests. exclude and run model tests only.
+      if (provider_name != provider_name_tensorrt) {
+        paths.push_back(ConcatPathComponent(node_test_root_path, p));
+      }
     }
 
     // Same as the above, except this one is for large models
@@ -627,11 +688,15 @@ static ORT_STRING_VIEW provider_name_dml = ORT_TSTR("dml");
     }
 #endif
 
-    ORT_STRING_VIEW provider_name = kvp.first;
     std::unordered_set<std::basic_string<ORTCHAR_T>> all_disabled_tests(std::begin(immutable_broken_tests),
                                                                         std::end(immutable_broken_tests));
-    if (provider_name == provider_name_cuda) {
-      all_disabled_tests.insert(std::begin(cuda_flaky_tests), std::end(cuda_flaky_tests));
+    bool provider_cuda_or_rocm = provider_name == provider_name_cuda;
+    if (provider_name == provider_name_rocm) {
+      provider_cuda_or_rocm = true;
+      all_disabled_tests.insert(std::begin(rocm_disabled_tests), std::end(rocm_disabled_tests));
+    }
+    if (provider_cuda_or_rocm) {
+      all_disabled_tests.insert(std::begin(cuda_rocm_flaky_tests), std::end(cuda_rocm_flaky_tests));
     } else if (provider_name == provider_name_dml) {
       all_disabled_tests.insert(std::begin(dml_disabled_tests), std::end(dml_disabled_tests));
     } else if (provider_name == provider_name_dnnl) {
@@ -682,45 +747,45 @@ static ORT_STRING_VIEW provider_name_dml = ORT_TSTR("dml");
     all_disabled_tests.insert(ORT_TSTR("fp16_tiny_yolov2"));
 
     while (!paths.empty()) {
-      std::basic_string<ORTCHAR_T> node_data_root_path = paths.back();
+      std::filesystem::path node_data_root_path = paths.back();
       paths.pop_back();
-      std::basic_string<ORTCHAR_T> my_dir_name = GetLastComponent(node_data_root_path);
-      ORT_TRY {
-        LoopDir(node_data_root_path, [&](const ORTCHAR_T* filename, OrtFileType f_type) -> bool {
-          if (filename[0] == ORT_TSTR('.'))
-            return true;
-          if (f_type == OrtFileType::TYPE_DIR) {
-            std::basic_string<PATH_CHAR_TYPE> p = ConcatPathComponent(node_data_root_path, filename);
-            paths.push_back(p);
-            return true;
-          }
-          std::basic_string<PATH_CHAR_TYPE> filename_str = filename;
-          if (!HasExtensionOf(filename_str, ORT_TSTR("onnx")))
-            return true;
-          std::basic_string<PATH_CHAR_TYPE> test_case_name = my_dir_name;
-          if (test_case_name.compare(0, 5, ORT_TSTR("test_")) == 0)
-            test_case_name = test_case_name.substr(5);
-          if (all_disabled_tests.find(test_case_name) != all_disabled_tests.end())
-            return true;
+      if (!std::filesystem::exists(node_data_root_path) || !std::filesystem::is_directory(node_data_root_path)) {
+        continue;
+      }
+      for (auto const& dir_entry : std::filesystem::directory_iterator(node_data_root_path)) {
+        if (dir_entry.is_directory()) {
+          paths.push_back(dir_entry.path());
+          continue;
+        }
+        const std::filesystem::path& path = dir_entry.path();
+        if (!path.has_filename() || path.filename().native().compare(0, 1, ORT_TSTR(".")) == 0) {
+          // Ignore hidden files.
+          continue;
+        }
+        if (path.filename().extension().compare(ORT_TSTR(".onnx")) != 0) {
+          // Ignore the files that are not ONNX models
+          continue;
+        }
+        std::basic_string<PATH_CHAR_TYPE> test_case_name = path.parent_path().filename().native();
+        if (test_case_name.compare(0, 5, ORT_TSTR("test_")) == 0)
+          test_case_name = test_case_name.substr(5);
+        if (all_disabled_tests.find(test_case_name) != all_disabled_tests.end())
+          continue;
 
 #ifdef DISABLE_ML_OPS
-          auto starts_with = [](const std::basic_string<PATH_CHAR_TYPE>& find_in,
-                                const std::basic_string<PATH_CHAR_TYPE>& find_what) {
-            return find_in.compare(0, find_what.size(), find_what) == 0;
-          };
-          if (starts_with(test_case_name, ORT_TSTR("XGBoost_")) || starts_with(test_case_name, ORT_TSTR("coreml_")) ||
-              starts_with(test_case_name, ORT_TSTR("scikit_")) || starts_with(test_case_name, ORT_TSTR("libsvm_"))) {
-            return true;
-          }
+        auto starts_with = [](const std::basic_string<PATH_CHAR_TYPE>& find_in,
+                              const std::basic_string<PATH_CHAR_TYPE>& find_what) {
+          return find_in.compare(0, find_what.size(), find_what) == 0;
+        };
+        if (starts_with(test_case_name, ORT_TSTR("XGBoost_")) || starts_with(test_case_name, ORT_TSTR("coreml_")) ||
+            starts_with(test_case_name, ORT_TSTR("scikit_")) || starts_with(test_case_name, ORT_TSTR("libsvm_"))) {
+          continue;
+        }
 #endif
-          std::basic_ostringstream<PATH_CHAR_TYPE> oss;
-          oss << provider_name << ORT_TSTR("_") << ConcatPathComponent(node_data_root_path, filename_str);
-          v.emplace_back(oss.str());
-          return true;
-        });
+        std::basic_ostringstream<PATH_CHAR_TYPE> oss;
+        oss << provider_name << ORT_TSTR("_") << path.native();
+        v.emplace_back(oss.str());
       }
-      ORT_CATCH(const std::exception&) {
-      }  // ignore non-exist dir
     }
   }
   return v;

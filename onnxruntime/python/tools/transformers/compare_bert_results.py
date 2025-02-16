@@ -37,15 +37,22 @@ def compare(baseline_results, treatment_results, verbose, rtol=1e-1, atol=1e-3):
     # Validate the output of baseline and treatment, to make sure the results are similar.
     diff_count = 0
     max_abs_diff = 0
+    max_diff_percentage = 0
+    case_passed = True
     for test_case_id, results in enumerate(baseline_results):
-        case_passed = True
         for i in range(len(results)):
             treatment_output = treatment_results[test_case_id][i]
-            abs_diff = np.amax(np.abs(treatment_output - results[i]))
+            abs_diff_tensor = np.abs(treatment_output - results[i])
+            abs_diff = np.amax(abs_diff_tensor)
             if verbose and abs_diff > atol:
                 print("abs_diff", abs_diff)
                 print("treatment", treatment_output)
                 print("baseline", results[i])
+
+            count_exceeding = np.sum(abs_diff_tensor > atol)
+            total_elements = abs_diff_tensor.size
+            percentage_exceeding = (count_exceeding / total_elements) * 100
+            max_diff_percentage = max(max_diff_percentage, percentage_exceeding)
 
             max_abs_diff = max(max_abs_diff, abs_diff)
             if not np.allclose(results[i].tolist(), treatment_output.tolist(), rtol=rtol, atol=atol):
@@ -59,19 +66,14 @@ def compare(baseline_results, treatment_results, verbose, rtol=1e-1, atol=1e-3):
                         print(f"abs_diff={abs_diff}")
 
     if diff_count == 0:
-        print(
-            "100% passed for {} random inputs given thresholds (rtol={}, atol={}).".format(
-                len(baseline_results), rtol, atol
-            )
-        )
+        print(f"100% passed for {len(baseline_results)} random inputs given thresholds (rtol={rtol}, atol={atol}).")
     else:
         print(
-            "WARNING: {} out of {} results NOT passed for thresholds (rtol={}, atol={}).".format(
-                diff_count, len(baseline_results), rtol, atol
-            )
+            f"WARNING: {diff_count} out of {len(baseline_results)} results NOT passed for thresholds (rtol={rtol}, atol={atol})."
         )
 
     print(f"maximum absolute difference={max_abs_diff}")
+    print(f"maximum percentage of elements that exceeds atol={atol} is {max_diff_percentage:.3f}%")
     return max_abs_diff, case_passed
 
 
@@ -91,6 +93,7 @@ def run_test(
     segment_ids_name,
     input_mask_name,
     mask_type,
+    dictionary_size: int = 1024,
 ):
     # Try deduce input names from optimized model.
     input_ids, segment_ids, input_mask = get_bert_inputs(
@@ -111,17 +114,14 @@ def run_test(
         average_sequence_length,
         True,  # random sequence length
         mask_type,
+        dictionary_size=dictionary_size,
     )
 
     baseline_results, baseline_latency, output_names = run_model(
         baseline_model, all_inputs, use_gpu, disable_optimization=True
     )
     if verbose:
-        print(
-            "baseline average latency (all optimizations disabled): {} ms".format(
-                statistics.mean(baseline_latency) * 1000
-            )
-        )
+        print(f"baseline average latency (all optimizations disabled): {statistics.mean(baseline_latency) * 1000} ms")
 
     if output_dir is not None:
         for i, inputs in enumerate(all_inputs):

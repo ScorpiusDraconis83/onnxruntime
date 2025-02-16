@@ -718,11 +718,6 @@ target_compile_definitions(winml_dll PRIVATE ONNX_ML)
 target_compile_definitions(winml_dll PRIVATE LOTUS_LOG_THRESHOLD=2)
 target_compile_definitions(winml_dll PRIVATE LOTUS_ENABLE_STDERR_LOGGING)
 target_compile_definitions(winml_dll PRIVATE PLATFORM_WINDOWS)
-target_compile_definitions(winml_dll PRIVATE VER_MAJOR=${VERSION_MAJOR_PART})
-target_compile_definitions(winml_dll PRIVATE VER_MINOR=${VERSION_MINOR_PART})
-target_compile_definitions(winml_dll PRIVATE VER_BUILD=${VERSION_BUILD_PART})
-target_compile_definitions(winml_dll PRIVATE VER_PRIVATE=${VERSION_PRIVATE_PART})
-target_compile_definitions(winml_dll PRIVATE VER_STRING=\"${VERSION_STRING}\")
 target_compile_definitions(winml_dll PRIVATE BINARY_NAME=\"${BINARY_NAME}\")
 
 if (onnxruntime_WINML_NAMESPACE_OVERRIDE STREQUAL "Windows")
@@ -787,7 +782,7 @@ add_dependencies(winml_dll winml_api_native)
 add_dependencies(winml_dll winml_api_native_internal)
 
 # Link libraries
-target_link_libraries(winml_dll PRIVATE re2)
+target_link_libraries(winml_dll PRIVATE re2::re2)
 target_link_libraries(winml_dll PRIVATE ${WIL_TARGET})
 target_link_libraries(winml_dll PRIVATE winml_lib_api)
 if (NOT winml_is_inbox)
@@ -836,6 +831,13 @@ if (winml_is_inbox)
     target_include_directories(${new_target} PRIVATE ${include_directories})
     target_link_libraries(${new_target} PRIVATE ${link_libraries})
     target_link_options(${new_target} PRIVATE ${link_options})
+
+    # Attempt to copy linker flags 
+    get_target_property(link_flags ${target} LINK_FLAGS)
+    
+    if (NOT link_flags MATCHES ".*NOTFOUND")
+      set_property(TARGET ${new_target} PROPERTY LINK_FLAGS "${link_flags}")
+    endif()
   endfunction()
 
   if (WAI_ARCH STREQUAL x64 OR WAI_ARCH STREQUAL arm64)

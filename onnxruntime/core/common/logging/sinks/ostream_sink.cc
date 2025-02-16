@@ -2,7 +2,6 @@
 // Licensed under the MIT License.
 
 #include "core/common/logging/sinks/ostream_sink.h"
-#include "date/date.h"
 
 namespace onnxruntime {
 namespace logging {
@@ -22,9 +21,10 @@ struct Color {
 };
 #endif
 
+#ifndef _WIN32
 void OStreamSink::SendImpl(const Timestamp& timestamp, const std::string& logger_id, const Capture& message) {
   // operator for formatting of timestamp in ISO8601 format including microseconds
-  using date::operator<<;
+  using timestamp_ns::operator<<;
 
   // Two options as there may be multiple calls attempting to write to the same sink at once:
   // 1) Use mutex to synchronize access to the stream.
@@ -45,7 +45,8 @@ void OStreamSink::SendImpl(const Timestamp& timestamp, const std::string& logger
   }
 #endif
 
-  msg << timestamp << " [" << message.SeverityPrefix() << ":" << message.Category() << ":" << logger_id << ", "
+  timestamp_ns::operator<<(msg, timestamp);  // handle ambiguity with C++20 where date and std::chrono have operator<<
+  msg << " [" << message.SeverityPrefix() << ":" << message.Category() << ":" << logger_id << ", "
       << message.Location().ToString() << "] " << message.Message();
 
 #ifndef ORT_MINIMAL_BUILD
@@ -63,7 +64,7 @@ void OStreamSink::SendImpl(const Timestamp& timestamp, const std::string& logger
     stream_->flush();
   }
 }
-#ifdef _WIN32
+#else
 void WOStreamSink::SendImpl(const Timestamp& timestamp, const std::string& logger_id, const Capture& message) {
   // operator for formatting of timestamp in ISO8601 format including microseconds
   using date::operator<<;

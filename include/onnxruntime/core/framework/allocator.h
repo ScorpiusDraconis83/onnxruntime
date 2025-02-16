@@ -50,7 +50,11 @@ constexpr const char* HIP = "Hip";
 constexpr const char* HIP_PINNED = "HipPinned";
 constexpr const char* OpenVINO_CPU = "OpenVINO_CPU";
 constexpr const char* OpenVINO_GPU = "OpenVINO_GPU";
+constexpr const char* OpenVINO_RT = "OpenVINO_RT";
+constexpr const char* OpenVINO_RT_NPU = "OpenVINO_RT_NPU";
+constexpr const char* QNN_HTP_SHARED = "QnnHtpShared";
 constexpr const char* WEBGPU_BUFFER = "WebGPU_Buffer";
+constexpr const char* WEBNN_TENSOR = "WebNN_Tensor";
 
 constexpr size_t kAllocAlignment = 256;
 
@@ -78,9 +82,12 @@ class IAllocator {
    */
   virtual void* Alloc(size_t size) = 0;
 
+  /**
+   * Free memory at p.
+   * If p is nullptr, do nothing.
+   */
   virtual void Free(void* p) = 0;
 
-  // TODO: Find a better name than Reserve() and update in all places.
   // Reserve() is an interface exposed for an implementation of IAllocator
   // to optionally implement some allocation logic that by-passes any arena-based
   // logic that may be housed in the Alloc() implementation.

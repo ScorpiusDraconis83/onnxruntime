@@ -265,6 +265,41 @@ TEST(TrainingCApiTest, LoadONNXModelsFromBuffer) {
                                                                train_model_data);
 }
 
+TEST(TrainingCApiTest, LoadONNXModelsFromBufferThenExport) {
+  auto model_path = MODEL_FOLDER "training_model.onnx";
+  size_t model_data_len = 0;
+  ASSERT_STATUS_OK(Env::Default().GetFileLength(model_path, model_data_len));
+  std::vector<uint8_t> train_model_data(model_data_len);
+  std::ifstream bytes_stream(model_path, std::ifstream::in | std::ifstream::binary);
+  bytes_stream.read(reinterpret_cast<char*>(train_model_data.data()), model_data_len);
+  ASSERT_TRUE(train_model_data.size() == model_data_len);
+
+  auto eval_model_path = MODEL_FOLDER "eval_model.onnx";
+  size_t eval_model_data_len = 0;
+  ASSERT_STATUS_OK(Env::Default().GetFileLength(eval_model_path, eval_model_data_len));
+  std::vector<uint8_t> eval_model_data(eval_model_data_len);
+  std::ifstream eval_bytes_stream(eval_model_path, std::ifstream::in | std::ifstream::binary);
+  eval_bytes_stream.read(reinterpret_cast<char*>(eval_model_data.data()), eval_model_data_len);
+  ASSERT_TRUE(eval_model_data.size() == eval_model_data_len);
+
+  Ort::Env env;
+  Ort::CheckpointState checkpoint_state = Ort::CheckpointState::LoadCheckpoint(MODEL_FOLDER "checkpoint.ckpt");
+  Ort::TrainingSession training_session = Ort::TrainingSession(env,
+                                                               Ort::SessionOptions(),
+                                                               checkpoint_state,
+                                                               train_model_data,
+                                                               eval_model_data);
+
+  // randomly selected output name
+  std::vector<std::string> graph_output_names({"onnx::loss::21273"});
+  training_session.ExportModelForInferencing(MODEL_FOLDER "inference_model.onnx", graph_output_names);
+
+  // Check that the model is a valid inference model by loading into an InferenceSession
+  std::unique_ptr<Environment> environment;
+  ASSERT_STATUS_OK(Environment::Create(nullptr, environment));
+  InferenceSession inference_session = InferenceSession(SessionOptions(), *environment, MODEL_FOLDER "inference_model.onnx");
+}
+
 TEST(TrainingCApiTest, LoadORTFormatModelsFromBuffer) {
   auto train_model_path = ORT_FORMAT_MODEL_FOLDER "training_model.ort";
   auto eval_model_path = ORT_FORMAT_MODEL_FOLDER "eval_model.ort";
@@ -419,5 +454,80 @@ TEST(TrainingCApiTest, UpdateParameterDifferentDevices) {
   ASSERT_NE(actual, not_expected);
 }
 #endif
+
+TEST(TrainingCApiTest, ModuleAndOptimizerWithNominalState) {
+  auto training_model_uri = MODEL_FOLDER "training_model.onnx";
+  auto eval_model_uri = MODEL_FOLDER "eval_model.onnx";
+  auto optimizer_model_uri = MODEL_FOLDER "adamw.onnx";
+
+  Ort::Env env;
+  Ort::SessionOptions session_options_for_complete_state;
+  Ort::SessionOptions session_options_for_nominal_state;
+  Ort::CheckpointState complete_state = Ort::CheckpointState::LoadCheckpoint(MODEL_FOLDER "checkpoint.ckpt");
+  Ort::CheckpointState nominal_state = Ort::CheckpointState::LoadCheckpoint(MODEL_FOLDER "nominal_checkpoint");
+
+#ifdef USE_CUDA
+  Ort::ThrowOnError(OrtSessionOptionsAppendExecutionProvider_CUDA(session_options_for_complete_state, 0));
+  Ort::ThrowOnError(OrtSessionOptionsAppendExecutionProvider_CUDA(session_options_for_nominal_state, 0));
+#endif
+
+  Ort::TrainingSession complete_training_session = Ort::TrainingSession(env, session_options_for_complete_state, complete_state,
+                                                                        training_model_uri, eval_model_uri, optimizer_model_uri);
+  Ort::TrainingSession nominal_training_session = Ort::TrainingSession(env, session_options_for_nominal_state, nominal_state,
+                                                                       training_model_uri, eval_model_uri,
+                                                                       optimizer_model_uri);
+
+  Ort::Value params_buffer = complete_training_session.ToBuffer(false);
+  nominal_training_session.FromBuffer(params_buffer);
+
+  for (size_t i = 0; i < 4U; ++i) {
+    std::vector<float> x(2 * 784);
+    std::vector<int64_t> x_shape{2, 784};
+    GenerateRandomData(x);
+
+    std::vector<int32_t> labels{0, 8};
+    std::vector<int64_t> labels_shape{2};
+
+    Ort::MemoryInfo memory_info = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
+    std::vector<Ort::Value> ort_inputs;
+    ort_inputs.emplace_back(Ort::Value::CreateTensor(memory_info, x.data(),
+                                                     x.size() * sizeof(float),
+                                                     x_shape.data(), x_shape.size(),
+                                                     ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT));
+    ort_inputs.emplace_back(Ort::Value::CreateTensor(memory_info, labels.data(),
+                                                     labels.size() * sizeof(int32_t),
+                                                     labels_shape.data(), labels_shape.size(),
+                                                     ONNX_TENSOR_ELEMENT_DATA_TYPE_INT32));
+
+    std::vector<Ort::Value> complete_fetches = complete_training_session.TrainStep(ort_inputs);
+    std::vector<Ort::Value> nominal_fetches = nominal_training_session.TrainStep(ort_inputs);
+
+    ASSERT_EQ(complete_fetches.size(), nominal_fetches.size());
+    ASSERT_GT(complete_fetches.size(), 0U);
+    for (size_t j = 0; j < complete_fetches.size(); ++j) {
+      ASSERT_TRUE(complete_fetches[j].IsTensor());
+      ASSERT_TRUE(nominal_fetches[j].IsTensor());
+
+      auto complete_tensor_info = complete_fetches[j].GetTensorTypeAndShapeInfo();
+      auto nominal_tensor_info = nominal_fetches[j].GetTensorTypeAndShapeInfo();
+
+      ASSERT_EQ(complete_tensor_info.GetShape(), nominal_tensor_info.GetShape());
+      ASSERT_EQ(complete_tensor_info.GetElementType(), nominal_tensor_info.GetElementType());
+
+      gsl::span complete_data = gsl::span(complete_fetches[j].GetTensorMutableData<float>(),
+                                          complete_tensor_info.GetElementCount());
+      gsl::span nominal_data = gsl::span(nominal_fetches[j].GetTensorMutableData<float>(),
+                                         nominal_tensor_info.GetElementCount());
+
+      ASSERT_EQ(complete_data, nominal_data);
+    }
+
+    complete_training_session.OptimizerStep();
+    nominal_training_session.OptimizerStep();
+
+    complete_training_session.LazyResetGrad();
+    nominal_training_session.LazyResetGrad();
+  }
+}
 
 }  // namespace onnxruntime::training::test

@@ -115,8 +115,7 @@ def create_test_dir(
     model_outputs = model.graph.output
 
     def save_data(prefix, name_data_map, model_info):
-        idx = 0
-        for name, data in name_data_map.items():
+        for idx, (name, data) in enumerate(name_data_map.items()):
             if isinstance(data, dict):
                 # ignore. map<T1, T2> from traditional ML ops
                 pass
@@ -129,8 +128,6 @@ def create_test_dir(
                 filename = os.path.join(test_data_dir, f"{prefix}_{idx}.pb")
                 with open(filename, "wb") as f:
                     f.write(tensor.SerializeToString())
-
-            idx += 1
 
     if not name_input_map:
         name_input_map = {}
@@ -162,7 +159,7 @@ def create_test_dir(
         sess = ort.InferenceSession(test_model_filename, so)
         outputs = sess.run(output_names, name_input_map)
         name_output_map = {}
-        for name, data in zip(output_names, outputs):
+        for name, data in zip(output_names, outputs, strict=False):
             name_output_map[name] = data
 
     save_data("output", name_output_map, model_outputs)

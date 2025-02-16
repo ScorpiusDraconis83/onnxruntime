@@ -28,9 +28,7 @@ class CMakeBuild(build_ext):
         subprocess.check_call(
             [
                 "cmake",
-                "-DPYBIND11_PYTHON_VERSION={}.{}.{}".format(
-                    sys.version_info.major, sys.version_info.minor, sys.version_info.micro
-                ),
+                f"-DPYBIND11_PYTHON_VERSION={sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
                 f"-Dpybind11_DIR={pybind11.get_cmake_dir()}",
                 f"-DONNX_INCLUDE={os.path.dirname(os.path.dirname(onnx.__file__))}",
                 "-DONNXRUNTIME_EXTERNAL_INCLUDE={}".format(
@@ -52,6 +50,6 @@ setup(
     description="External custom ops example",
     long_description="",
     ext_modules=[CMakeExtension("orttrainng_external_custom_ops")],
-    cmdclass=dict(build_ext=CMakeBuild),
+    cmdclass={"build_ext": CMakeBuild},
     zip_safe=False,
 )

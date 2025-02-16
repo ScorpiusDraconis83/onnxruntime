@@ -18,10 +18,12 @@ namespace onnxruntime {
 
 ConstantFolding::ConstantFolding(const IExecutionProvider& execution_provider,
                                  bool skip_dequantize_linear,
+                                 const ConfigOptions& config_options,
                                  const InlinedHashSet<std::string_view>& compatible_execution_providers,
                                  const InlinedHashSet<std::string>& excluded_initializers) noexcept
     : GraphTransformer("ConstantFolding", compatible_execution_providers),
       skip_dequantize_linear_(skip_dequantize_linear),
+      config_options_(config_options),
       excluded_initializers_(excluded_initializers),
       execution_provider_(execution_provider) {
 }
@@ -80,8 +82,7 @@ static bool ConstantFoldShapeNode(Graph& graph, Node& node) {
     shape_constant.set_name(constant_arg_out->Name());
     shape_constant.set_data_type(ONNX_NAMESPACE::TensorProto_DataType_INT64);
     shape_constant.add_dims(clamped_slice_length);
-    shape_constant.set_raw_data(dim_values.data() + start,
-                                clamped_slice_length * sizeof(int64_t));
+    utils::SetRawDataInTensorProto(shape_constant, dim_values.data() + start, clamped_slice_length * sizeof(int64_t));
     ONNX_NAMESPACE::TensorShapeProto result_shape;
     result_shape.add_dim()->set_dim_value(clamped_slice_length);
     constant_arg_out->SetShape(result_shape);
@@ -226,11 +227,12 @@ Status ConstantFolding::ApplyImpl(Graph& graph, bool& modified, int graph_level,
 #if !defined(DISABLE_SPARSE_TENSORS)
       // Create execution frame for executing constant nodes.
       OptimizerExecutionFrame::Info info({node}, constant_inputs, graph.ModelPath(), execution_provider_,
-                                         is_sparse_initializer_check);
+                                         is_sparse_initializer_check, logger);
 #else
       // Create execution frame for executing constant nodes.
-      OptimizerExecutionFrame::Info info({node}, constant_inputs, graph.ModelPath(), execution_provider_,
-                                         [](std::string const&) { return false; });
+      OptimizerExecutionFrame::Info info(
+          {node}, constant_inputs, graph.ModelPath(), execution_provider_, [](const std::string&) { return false; },
+          logger);
 #endif
 
       std::vector<int> fetch_mlvalue_idxs;
@@ -250,12 +252,12 @@ Status ConstantFolding::ApplyImpl(Graph& graph, bool& modified, int graph_level,
         // override the EP assigned to the node so that it will use the CPU kernel for Compute.
         node->SetExecutionProviderType(kCpuExecutionProvider);
 
-        kernel = info.CreateKernel(node);
+        kernel = info.CreateKernel(node, config_options_);
 
         // undo the EP change to the value that was assigned at graph partitioning time
         node->SetExecutionProviderType(ep_type);
       } else {
-        kernel = info.CreateKernel(node);
+        kernel = info.CreateKernel(node, config_options_);
       }
 
       // We currently constant fold using the CPU EP only.

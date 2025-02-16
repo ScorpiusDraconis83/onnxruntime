@@ -5,6 +5,10 @@ parameters:
 - name: RocmVersion
   type: string
 
+- name: RocmVersionPatchSuffix
+  type: string
+  default: ''
+
 - name: BuildConfig
   type: string
   default: 'Release'
@@ -13,8 +17,8 @@ jobs:
 - job: wheels_python_${{ replace(parameters.PythonVersion,'.','_') }}_rocm_${{ replace(parameters.RocmVersion,'.','_') }}_${{ parameters.BuildConfig }}
   workspace:
     clean: all
-  timeoutInMinutes: 180
-  pool: Ubuntu-2004-rocm-aiinfra
+  timeoutInMinutes: 360
+  pool: Ubuntu-2204-rocm-aiinfra
   variables:
     - name: PythonVersion
       value: ${{ parameters.PythonVersion }}
@@ -47,6 +51,7 @@ jobs:
     parameters:
       Dockerfile: tools/ci_build/github/linux/docker/Dockerfile.manylinux2_28_rocm
       Context: tools/ci_build/github/linux/docker
+      CheckOutManyLinux: true
       DockerBuildArgs: >-
         --build-arg INSTALL_DEPS_EXTRA_ARGS=-tmur
         --build-arg BUILD_UID=$(id -u)
@@ -54,13 +59,13 @@ jobs:
         --build-arg DEVTOOLSET_ROOTPATH=/opt/rh/gcc-toolset-12/root
         --build-arg PREPEND_PATH=/opt/rh/gcc-toolset-12/root/usr/bin:
         --build-arg LD_LIBRARY_PATH_ARG=/opt/rh/gcc-toolset-12/root/usr/lib64:/opt/rh/gcc-toolset-12/root/usr/lib:/opt/rh/gcc-toolset-12/root/usr/lib64/dyninst:/opt/rh/gcc-toolset-12/root/usr/lib/dyninst:/usr/local/lib64:/usr/local/lib
-        --build-arg ROCM_VERSION=${{ parameters.RocmVersion }}
+        --build-arg ROCM_VERSION=${{ parameters.RocmVersion }}${{ parameters.RocmVersionPatchSuffix }}
       Repository: onnxruntimetrainingrocmbuild-rocm${{ parameters.RocmVersion }}
 
   - task: CmdLine@2
     inputs:
       script: |
-        docker run --rm \
+        docker run -e SYSTEM_COLLECTIONURI --rm \
           --privileged \
           --ipc=host \
           --network=host \
@@ -84,7 +89,7 @@ jobs:
               --rocm_home=/opt/rocm \
               --nccl_home=/opt/rocm \
               --update \
-              --parallel \
+              --parallel --use_vcpkg \
               --build_dir /build \
               --build \
               --build_wheel \

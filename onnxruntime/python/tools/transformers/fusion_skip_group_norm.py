@@ -3,7 +3,6 @@
 # Licensed under the MIT License.
 # --------------------------------------------------------------------------
 from logging import getLogger
-from typing import List
 
 from fusion_base import Fusion
 from fusion_utils import NumpyHelper
@@ -26,7 +25,7 @@ class FusionSkipGroupNorm(Fusion):
         if self.shape_infer_helper is None:
             logger.warning("SkipGroupNorm fusion will be skipped since symbolic shape inference disabled or failed.")
 
-    def create_transpose_node(self, input_name: str, perm: List[int], output_name=None):
+    def create_transpose_node(self, input_name: str, perm: list[int], output_name=None):
         """Append a Transpose node after an input"""
         node_name = self.model.create_node_name("Transpose")
         if output_name is None:
@@ -147,7 +146,7 @@ class FusionSkipGroupNorm(Fusion):
 
     def match_transpose_from_nhwc(self, output_name, input_name_to_nodes, output_name_to_node):
         """Match whether an output is from a Transpose(perm=[0,3,1,2]) node."""
-        parent = output_name_to_node[output_name] if output_name in output_name_to_node else None
+        parent = output_name_to_node.get(output_name, None)
         if parent is not None and parent.op_type == "Transpose":
             permutation = OnnxModel.get_node_attribute(parent, "perm")
             if permutation == [0, 3, 1, 2]:

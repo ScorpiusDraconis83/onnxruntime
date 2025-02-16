@@ -18,11 +18,6 @@ class CastOpBuilder : public BaseOpBuilder {
  private:
   Status AddToModelBuilderImpl(ModelBuilder& model_builder, const Node& node,
                                const logging::Logger& logger) const override ORT_MUST_USE_RESULT;
-
-  // Operator support related.
- private:
-  bool IsOpSupportedImpl(const InitializedTensorSet& /* initializers */, const Node& node,
-                         const WebnnDeviceType device_type, const logging::Logger& logger) const override;
 };
 
 // Add operator related.
@@ -38,8 +33,18 @@ Status CastOpBuilder::AddToModelBuilderImpl(ModelBuilder& model_builder,
   const auto to_type = helper.Get("to", ONNX_NAMESPACE::TensorProto_DataType_FLOAT);
   std::string operand_type;
   switch (to_type) {
+    case ONNX_NAMESPACE::TensorProto_DataType_INT4:
+      operand_type = "int4";
+      break;
+    case ONNX_NAMESPACE::TensorProto_DataType_UINT4:
+      operand_type = "uint4";
+      break;
     case ONNX_NAMESPACE::TensorProto_DataType_BOOL:
+    case ONNX_NAMESPACE::TensorProto_DataType_UINT8:
       operand_type = "uint8";
+      break;
+    case ONNX_NAMESPACE::TensorProto_DataType_INT8:
+      operand_type = "int8";
       break;
     case ONNX_NAMESPACE::TensorProto_DataType_FLOAT16:
       operand_type = "float16";
@@ -65,28 +70,14 @@ Status CastOpBuilder::AddToModelBuilderImpl(ModelBuilder& model_builder,
                              node.Name(), " type: ", to_type);
   }
 
+  emscripten::val options = emscripten::val::object();
+  options.set("label", node.Name());
+
   emscripten::val output =
-      model_builder.GetBuilder().call<emscripten::val>("cast", input, emscripten::val(operand_type));
+      model_builder.GetBuilder().call<emscripten::val>("cast", input, emscripten::val(operand_type), options);
 
   model_builder.AddOperand(node.OutputDefs()[0]->Name(), std::move(output));
   return Status::OK();
-}
-
-// Operator support related.
-
-bool CastOpBuilder::IsOpSupportedImpl(const InitializedTensorSet& /* initializers */,
-                                      const Node& node,
-                                      const WebnnDeviceType device_type,
-                                      const logging::Logger& logger) const {
-  NodeAttrHelper helper(node);
-  // Check cast output type.
-  const auto to_type = helper.Get("to", ONNX_NAMESPACE::TensorProto_DataType_UNDEFINED);
-  if (!IsSupportedDataType(to_type, device_type)) {
-    LOGS(logger, VERBOSE) << "Invalid cast to type " << to_type << ".";
-    return false;
-  }
-
-  return true;
 }
 
 void CreateCastOpBuilder(const std::string& op_type, OpBuilderRegistrations& op_registrations) {

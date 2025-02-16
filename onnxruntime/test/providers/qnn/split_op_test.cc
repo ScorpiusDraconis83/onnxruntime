@@ -7,7 +7,7 @@
 
 #include "test/providers/qnn/qnn_test_utils.h"
 
-#include "onnx/onnx_pb.h"
+#include "core/graph/onnx_protobuf.h"
 #include "gtest/gtest.h"
 
 namespace onnxruntime {
@@ -276,6 +276,7 @@ static void RunQDQSplitOpTestOnHTP(const TestInputDef<float>& input_def,
 #else
   provider_options["backend_path"] = "libQnnHtp.so";
 #endif
+  provider_options["offload_graph_io_quantization"] = "0";
 
   const bool split_is_input = opset >= 13;
   auto f32_model_builder = BuildSplitTestCase<float>(input_def, split, split_is_input, axis, num_outputs);
@@ -302,19 +303,46 @@ TEST_F(QnnHTPBackendTests, Split_Int32_Opset13) {
 // Test 8-bit QDQ Split opset 18 on HTP backend: equal split of axis 0 via 'num_outputs' attribute
 // and 'split' input.
 TEST_F(QnnHTPBackendTests, Split_Equal_Axis0_Opset18) {
+  // Split 6 into 3 outputs of lengths [2, 2, 2]
+  TestInputDef<float> input_def({6, 2}, false,
+                                {0.0f, 1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.f, 8.f, 9.0f, 10.0f, 11.0f});
+
   // Use 'split' input (initializer).
-  RunQDQSplitOpTestOnHTP<uint8_t>(TestInputDef<float>({4, 2}, false, {1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.f, 8.f}),
-                                  {2, 2},  // split
-                                  0,       // axis
-                                  -1,      // num_outputs
-                                  18,      // opset
+  RunQDQSplitOpTestOnHTP<uint8_t>(input_def,
+                                  {2, 2, 2},  // split
+                                  0,          // axis
+                                  -1,         // num_outputs
+                                  18,         // opset
                                   ExpectedEPNodeAssignment::All);
 
   // Use 'num_outputs' attribute.
-  RunQDQSplitOpTestOnHTP<uint8_t>(TestInputDef<float>({4, 2}, false, {1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.f, 8.f}),
+  RunQDQSplitOpTestOnHTP<uint8_t>(input_def,
                                   {},  // split (use num_outputs instead)
                                   0,   // axis
-                                  2,   // num_outputs
+                                  3,   // num_outputs
+                                  18,  // opset
+                                  ExpectedEPNodeAssignment::All);
+}
+
+// Test 8-bit QDQ Split opset 18 on HTP backend. Use an uneven split (last chunk should be smaller).
+TEST_F(QnnHTPBackendTests, Split_NonEqual_Axis0_Opset18) {
+  // Split 7 into 3 outputs of lengths [3, 3, 1]
+  TestInputDef<float> input_def({7, 2}, false,
+                                {0.0f, 1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.f, 8.f, 9.0f, 10.0f, 11.0f, 12.0f, 13.0f});
+
+  // Use a `split` input with uneven split lengths.
+  RunQDQSplitOpTestOnHTP<uint8_t>(input_def,
+                                  {3, 3, 1},  // split
+                                  0,          // axis
+                                  -1,         // num_outputs
+                                  18,         // opset
+                                  ExpectedEPNodeAssignment::All);
+
+  // Use a `num_outputs` attribute that does not evenly divide into shape[axis].
+  RunQDQSplitOpTestOnHTP<uint8_t>(input_def,
+                                  {},  // split (use num_outputs instead)
+                                  0,   // axis
+                                  3,   // num_outputs
                                   18,  // opset
                                   ExpectedEPNodeAssignment::All);
 }

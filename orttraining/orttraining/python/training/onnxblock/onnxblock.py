@@ -3,7 +3,6 @@
 
 import logging
 from abc import abstractmethod
-from typing import List, Tuple
 
 import onnx
 
@@ -70,7 +69,7 @@ class ForwardBlock(blocks.Block):
 
         output = self.build(*args, **kwargs)
 
-        self._model = onnx.shape_inference.infer_shapes(accessor._GLOBAL_ACCESSOR.model)
+        self._model = self.infer_shapes_on_base()
 
         _graph_utils.register_graph_outputs(self._model, output)
 
@@ -139,7 +138,7 @@ class TrainingBlock(blocks.Block):
                 self._requires_grad.remove(argument_name)
             self._frozen_params.add(argument_name)
 
-    def parameters(self) -> Tuple[List[onnx.TensorProto], List[onnx.TensorProto]]:
+    def parameters(self) -> tuple[list[onnx.TensorProto], list[onnx.TensorProto]]:
         """Trainable as well as non-trainable (frozen) parameters of the model.
 
         Model parameters that are extracted while building the training model
@@ -161,7 +160,7 @@ class TrainingBlock(blocks.Block):
 
         return self._parameters
 
-    def to_model_proto(self) -> Tuple[onnx.ModelProto, onnx.ModelProto]:
+    def to_model_proto(self) -> tuple[onnx.ModelProto, onnx.ModelProto]:
         """Returns the training and eval models.
 
         Once the gradient graph is built, the training and eval models can be retrieved
@@ -187,7 +186,7 @@ class TrainingBlock(blocks.Block):
 
         output = self.build(*args, **kwargs)
 
-        model = onnx.shape_inference.infer_shapes(accessor._GLOBAL_ACCESSOR.model)
+        model = self.infer_shapes_on_base()
 
         _graph_utils.register_graph_outputs(model, output)
 
